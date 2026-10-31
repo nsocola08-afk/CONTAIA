@@ -14,10 +14,13 @@ VOUCHER = "Voucher / movimiento bancario"
 
 
 # ------------------------------------------------------------------------------------------ importes
-def importes(monto, modo, tasa_pct, sobre_total=False):
-    """modo: 'incluido' (el monto ya trae impuesto), 'agregar' (se suma al monto) o 'sin' (no gravado).
-    Devuelve base, impuesto, no_gravado y total en la moneda del documento."""
+def importes(monto, modo, tasa_pct, sobre_total=False, impuesto_manual=0.0, no_gravado_manual=0.0):
+    """modo: 'incluido' (el monto ya trae impuesto), 'agregar' (se suma al monto), 'manual' (el usuario escribe el
+    impuesto; el monto es la base) o 'sin' (no gravado). Devuelve base, impuesto, no_gravado y total en la moneda del documento."""
     monto = round(float(monto or 0), 2)
+    if modo == "manual":
+        imp, ng = round(float(impuesto_manual or 0), 2), round(float(no_gravado_manual or 0), 2)
+        return {"base": monto, "impuesto": imp, "no_gravado": ng, "total": round(monto + imp + ng, 2)}
     t = float(tasa_pct or 0) / 100
     if modo == "sin" or t <= 0:
         return {"base": 0.0, "impuesto": 0.0, "no_gravado": monto, "total": monto}
@@ -42,7 +45,8 @@ def a_local(im, tc):
 
 
 def _imp(p, d):
-    im = importes(d["monto"], d["modo_imp"], d["tasa"], p.get("impuesto_sobre_total", False))
+    im = importes(d["monto"], d["modo_imp"], d["tasa"], p.get("impuesto_sobre_total", False),
+                  d.get("igv_manual", 0.0), d.get("ng_manual", 0.0))
     return a_local(im, d["tc"])
 
 

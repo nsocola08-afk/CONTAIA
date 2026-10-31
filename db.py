@@ -35,6 +35,7 @@ empresas = Table(
     Column("pct_renta", Float, default=0), Column("creado", DateTime, default=datetime.utcnow),
     Column("notas_ia", Text),                           # instrucciones permanentes para la IA
     Column("modo", String(10)),                         # lector | simple
+    Column("tasa_renta", Float),                        # tasa anual del impuesto a la renta (%), para estimar el resultado neto
 )
 
 documentos = Table(
@@ -71,7 +72,7 @@ def engine():
         # Migración: bases creadas antes de agregar la columna notas_ia (no pierde datos)
         from sqlalchemy import inspect, text
         existentes = {c["name"] for c in inspect(_engine).get_columns("empresas")}
-        for nombre_col, tipo_col in (("notas_ia", "TEXT"), ("modo", "VARCHAR(10)")):
+        for nombre_col, tipo_col in (("notas_ia", "TEXT"), ("modo", "VARCHAR(10)"), ("tasa_renta", "FLOAT")):
             if nombre_col not in existentes:
                 with _engine.begin() as c:
                     c.execute(text(f"ALTER TABLE empresas ADD COLUMN {nombre_col} {tipo_col}"))

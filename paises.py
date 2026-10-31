@@ -428,7 +428,7 @@ ESTANDAR = {
     "monedas": ["USD", "EUR", "PEN", "COP", "MXN", "CLP", "ARS", "BOB", "BRL", "GBP"],
     "inicio_ejercicio": "Enero", "reporte_impuestos": "Declaración de impuestos de tu país",
     "regimenes": {"General": None}, "pago_cuenta_label": "Pago a cuenta",
-    "actividades": _ACTIVIDADES, "cuentas_libres": True,
+    "actividades": _ACTIVIDADES, "cuentas_libres": True, "regimen_libre": True,
     "aviso": ("Modo neutro: la IA usa un plan estándar y la tasa de impuesto que muestre cada comprobante. "
               "No aplica reglas de ningún país; tu contador debe validar los asientos y las retenciones."),
     "grupos": _GRUPOS_ESTANDAR, "nomina": _NOMINA_ESTANDAR, "cuentas_base": _BASE_ESTANDAR,

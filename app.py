@@ -161,7 +161,19 @@ def bienvenida(owner):
         nombre = st.text_input("Nombre o razón social de la empresa")
         idf = st.text_input(f"{p['id_fiscal']} (número de identificación tributaria)", max_chars=20,
                             placeholder=f"Ej.: {p['id_ejemplo']}")
-        regimen = st.selectbox("Régimen tributario", list(p["regimenes"]))
+        if p.get("regimen_libre"):
+            regimen = st.text_input("Régimen tributario", value="General", max_chars=100,
+                                    help="Escribe el régimen de tu empresa (por ejemplo: General, Simplificado, MYPE).")
+            r1, r2 = st.columns(2)
+            tasa_renta = r1.number_input("Impuesto a la renta anual: tasa (%)", min_value=0.0, max_value=100.0, value=0.0, step=0.5,
+                                         help="Porcentaje del impuesto a la renta sobre la utilidad anual. Se usa para estimar el resultado neto.")
+            pct_in = r2.number_input("Pago a cuenta mensual sobre ventas (%)", min_value=0.0, max_value=100.0, value=0.0, step=0.1,
+                                     help="Porcentaje que pagas cada mes como adelanto del impuesto a la renta. Déjalo en 0 si no aplica.")
+        else:
+            regimen = st.selectbox("Régimen tributario", list(p["regimenes"]))
+            tasa_renta = st.number_input("Impuesto a la renta anual: tasa (%) (opcional)", min_value=0.0, max_value=100.0, value=0.0,
+                                         step=0.5, help="Para estimar el resultado neto en el Estado de Resultados. Puedes dejarlo en 0.")
+            pct_in = None
         c1, c2 = st.columns(2)
         if p.get("monedas"):
             moneda = c1.selectbox("Moneda principal", p["monedas"], index=p["monedas"].index(p["moneda"]))
@@ -180,12 +192,15 @@ def bienvenida(owner):
             st.error("Escribe el nombre de la empresa.")
         elif not actividad:
             st.error("Especifica el giro del negocio (por ejemplo: inmobiliaria).")
+        elif not regimen.strip():
+            st.error("Escribe el régimen tributario.")
         elif not re.fullmatch(p["id_regex"], idn):
             st.error(f"El {p['id_fiscal']} no tiene un formato válido para {p['nombre']}. Ejemplo: {p['id_ejemplo']}.")
         else:
             db.guardar_empresa(owner, dict(nombre=nombre.strip(), pais=p["codigo"], id_fiscal=idn,
-                                           regimen=regimen, moneda=moneda, actividad=actividad,
-                                           pct_renta=p["regimenes"][regimen] or 0, modo=modo))
+                                           regimen=regimen.strip(), moneda=moneda, actividad=actividad,
+                                           pct_renta=(pct_in if pct_in is not None else (p["regimenes"].get(regimen) or 0)),
+                                           tasa_renta=tasa_renta, modo=modo))
             st.session_state.pop("modo_sel", None)
             st.rerun()
 
@@ -360,7 +375,8 @@ def pg_registrar(owner, emp, p, docs):
     con_monto = tipo_op not in ("Planilla", "Asiento manual")
     opc = ia.opciones_naturaleza(p)
     fmt = lambda c: f"{c} – {plan[c]}"                    # noqa: E731
-    d = {"moneda": local, "tc": 1.0, "glosa": "", "documento": "", "id": "", "nombre": "", "forma": ops.FORMAS[1]}
+    d = {"moneda": local, "tc": 1.0, "glosa": "", "documento": "", "id": "", "nombre": "", "forma": ops.FORMAS[1],
+         "modo_imp": "incluido", "tasa": 0.0, "igv_manual": 0.0, "ng_manual": 0.0}
 
     with st.container(border=True):
         c1, c2, c3 = st.columns(3)
@@ -376,6 +392,10 @@ def pg_registrar(owner, emp, p, docs):
             d["documento"] = c2.text_input("N° de operación o voucher", key=K("doc"))
             d["nombre"] = c3.text_input("Cliente, proveedor o socio (opcional)", key=K("nom"))
 
+        if es_doc:
+            etiquetas = {"incluido": f"El monto ya incluye {imp_n}", "agregar": f"Sumar {imp_n} al monto",
+                         "manual": f"Escribir el monto del {imp_n}", "sin": f"Sin {imp_n} (no gravado o exonerado)"}
+            d["modo_imp"] = st.radio("Impuesto", list(etiquetas), format_func=lambda k: etiquetas[k], horizontal=True, key=K("imp"))
         if con_monto:
             m1, m2, m3 = st.columns(3)
             otras = [m for m in (p.get("monedas") or ["USD", "EUR"]) if m != local]
@@ -383,16 +403,20 @@ def pg_registrar(owner, emp, p, docs):
             if d["moneda"] != local:
                 d["tc"] = m2.number_input(f"Tipo de cambio (1 {d['moneda']} = ? {local})", min_value=0.0, value=0.0, step=0.01,
                                           format="%.4f", key=K("tc"))
-            d["monto"] = m3.number_input("Monto", min_value=0.0, step=1.0, format="%.2f", key=K("monto"))
+            d["monto"] = m3.number_input("Base imponible (sin impuesto)" if d.get("modo_imp") == "manual" else "Monto",
+                                         min_value=0.0, step=1.0, format="%.2f", key=K("monto"))
 
         if es_doc:
-            etiquetas = {"incluido": f"El monto ya incluye {imp_n}", "agregar": f"Sumar {imp_n} al monto",
-                         "sin": f"Sin {imp_n} (no gravado o exonerado)"}
-            i1, i2 = st.columns([3, 1])
-            d["modo_imp"] = i1.radio("Impuesto", list(etiquetas), format_func=lambda k: etiquetas[k], horizontal=True, key=K("imp"))
-            d["tasa"] = (i2.number_input(f"Tasa de {imp_n} (%)", min_value=0.0, max_value=100.0, step=0.5,
-                                         value=round((p["tasa_impuesto"] or 0) * 100, 2), key=K("tasa"))
-                         if d["modo_imp"] != "sin" else 0.0)
+            if d["modo_imp"] in ("incluido", "agregar"):
+                tc1, _ = st.columns([1, 3])
+                d["tasa"] = tc1.number_input(f"Tasa de {imp_n} (%)", min_value=0.0, max_value=100.0, step=0.5,
+                                             value=float(round((p["tasa_impuesto"] or 0.0) * 100, 2)), key=K("tasa"))
+            elif d["modo_imp"] == "manual":
+                x1, x2 = st.columns(2)
+                d["igv_manual"] = x1.number_input(f"Monto del {imp_n}", min_value=0.0, step=1.0, format="%.2f", key=K("igvm"))
+                d["ng_manual"] = x2.number_input("No gravado o exonerado (opcional)", min_value=0.0, step=1.0, format="%.2f", key=K("ngm"),
+                                                 help="Importes del comprobante que no llevan impuesto (exonerado, otros cargos).")
+                st.caption("Total = base imponible + monto del impuesto + no gravado.")
             d["forma"] = st.radio("Forma de pago o cobro", ops.FORMAS, horizontal=True, key=K("forma"))
 
             if tipo_op == "Venta":
@@ -446,21 +470,22 @@ def pg_registrar(owner, emp, p, docs):
                                    placeholder="Ej.: compra de hamburguesas, planilla de octubre…")
 
         # vista previa de importes
-        if es_doc and d.get("monto", 0) > 0:
+        if es_doc and (d.get("monto", 0) + d["igv_manual"] + d["ng_manual"]) > 0:
             if d["moneda"] != local and d["tc"] <= 0:
                 st.warning("Escribe el tipo de cambio para ver los importes en moneda local.")
             else:
-                v = ops.a_local(ops.importes(d["monto"], d["modo_imp"], d["tasa"], p.get("impuesto_sobre_total", False)), d["tc"] or 1)
+                v = ops.a_local(ops.importes(d["monto"], d["modo_imp"], d["tasa"], p.get("impuesto_sobre_total", False),
+                                             d["igv_manual"], d["ng_manual"]), d["tc"] or 1)
                 st.caption(f"En {local}: base {money(v['base'])} · {imp_n} {money(v['impuesto'])} · "
                            f"no gravado {money(v['no_gravado'])} · **total {money(v['total'])}**")
 
     if st.button("Generar asiento", type="primary", key=K("gen")):
         error = None
-        if con_monto and d["monto"] <= 0:
+        if con_monto and d["monto"] + (d["igv_manual"] + d["ng_manual"] if d["modo_imp"] == "manual" else 0) <= 0:
             error = "Escribe un monto mayor a cero."
         elif con_monto and d["moneda"] != local and d["tc"] <= 0:
             error = "Escribe el tipo de cambio."
-        elif es_doc and d["modo_imp"] != "sin" and d["tasa"] <= 0:
+        elif es_doc and d["modo_imp"] in ("incluido", "agregar") and d["tasa"] <= 0:
             error = f"Indica la tasa de {imp_n} o elige «Sin {imp_n}»."
         elif tipo_op == "Planilla" and d["bruto"] <= 0:
             error = "Escribe la remuneración bruta."
@@ -473,6 +498,11 @@ def pg_registrar(owner, emp, p, docs):
                                "Cobranza a cliente": ops.cobranza, "Pago a proveedor o deuda": ops.pago,
                                "Aporte de capital": ops.aporte_capital, "Asiento manual": ops.manual}[tipo_op]
                 doc = constructor(p, d)
+                if es_doc and d["modo_imp"] == "manual" and p["tasa_impuesto"] and not p.get("impuesto_sobre_total"):
+                    esperado = round(d["monto"] * p["tasa_impuesto"], 2)
+                    if abs(d["igv_manual"] - esperado) > max(0.05, esperado * 0.02):
+                        doc["alertas"].append(f"El {imp_n} escrito ({d['igv_manual']:,.2f}) difiere del calculado con la tasa general "
+                                              f"({esperado:,.2f}). Verifícalo.")
                 if d["id"].strip() and not re.fullmatch(p["id_regex"], normalizar_id(d["id"])):
                     doc["alertas"].append(f"El {p['id_fiscal']} escrito no tiene un formato válido para {p['nombre']}. Verifícalo.")
                 db.crear_documento(owner, doc, f"Registro manual – {tipo_op}", "", None)
@@ -637,13 +667,20 @@ def pg_eeff(owner, emp, p, docs):
     st.subheader(elegido)
     if elegido == opciones[0]:
         e = cont.estado_resultados(df, g)
+        t_renta = float(emp.get("tasa_renta") or 0)
+        renta = round(max(0.0, e["antes_impuestos"]) * t_renta / 100, 2)
+        extra = ([(f"(−) Impuesto a la renta estimado ({t_renta:g}%)", -renta),
+                  ("RESULTADO NETO ESTIMADO", e["antes_impuestos"] - renta)] if t_renta > 0 else [])
         estado([("Ventas", e["ventas"]), ("(−) Descuentos y devoluciones", -e["descuentos"]), ("VENTAS NETAS", e["ventas_netas"]),
                 ("(−) Costo de ventas / compras", -e["costo"]), ("UTILIDAD BRUTA", e["utilidad_bruta"]),
                 ("(−) Gastos de personal", -e["personal"]), ("(−) Servicios de terceros", -e["servicios"]),
                 ("(−) Tributos", -e["tributos"]), ("(−) Otros gastos de gestión", -e["otros_gastos"]),
                 ("(−) Depreciación", -e["depreciacion"]), ("UTILIDAD OPERATIVA", e["utilidad_operativa"]),
                 ("(+) Otros ingresos", e["otros_ingresos"]), ("(−) Gastos financieros", -e["financieros"]),
-                ("RESULTADO ANTES DE IMPUESTOS", e["antes_impuestos"])])
+                ("RESULTADO ANTES DE IMPUESTOS", e["antes_impuestos"])] + extra)
+        if extra:
+            st.caption("Estimación: la tasa anual se aplica a la utilidad del periodo elegido. La determinación definitiva del "
+                       "impuesto la hace tu contador en la declaración anual.")
     elif elegido == opciones[1]:
         A, P, Pt, ta, tp, tpt = cont.situacion_financiera(df_all, g, per)
         estado([("ACTIVO", None)] + list(A.items()) + [("TOTAL ACTIVO", ta), ("PASIVO", None)] + list(P.items())
@@ -688,16 +725,26 @@ def pg_config(owner, emp, p, docs):
     with st.form("cfg"):
         nombre = st.text_input("Razón social", emp["nombre"])
         idf = st.text_input(p["id_fiscal"], emp["id_fiscal"])
-        regs = list(p["regimenes"])
-        regimen = st.selectbox("Régimen tributario", regs, index=regs.index(emp["regimen"]) if emp["regimen"] in regs else 0)
-        con_pct = any(v is not None for v in p["regimenes"].values())
-        pct = (st.number_input(f"% {p['pago_cuenta_label']} (sobre ventas)", value=float(emp["pct_renta"] or 0), step=0.1)
-               if con_pct else 0.0)
+        if p.get("regimen_libre"):
+            regimen = st.text_input("Régimen tributario", value=emp["regimen"] or "General", max_chars=100)
+            r1, r2 = st.columns(2)
+            tasa_renta = r1.number_input("Impuesto a la renta anual: tasa (%)", min_value=0.0, max_value=100.0,
+                                         value=float(emp.get("tasa_renta") or 0), step=0.5)
+            pct = r2.number_input("Pago a cuenta mensual sobre ventas (%)", min_value=0.0, max_value=100.0,
+                                  value=float(emp["pct_renta"] or 0), step=0.1)
+        else:
+            regs = list(p["regimenes"])
+            regimen = st.selectbox("Régimen tributario", regs, index=regs.index(emp["regimen"]) if emp["regimen"] in regs else 0)
+            tasa_renta = st.number_input("Impuesto a la renta anual: tasa (%) (opcional)", min_value=0.0, max_value=100.0,
+                                         value=float(emp.get("tasa_renta") or 0), step=0.5)
+            con_pct = any(v is not None for v in p["regimenes"].values())
+            pct = (st.number_input(f"% {p['pago_cuenta_label']} (sobre ventas)", value=float(emp["pct_renta"] or 0), step=0.1)
+                   if con_pct else 0.0)
         notas = st.text_area("Instrucciones permanentes para la IA (opcional)", emp.get("notas_ia") or "", height=120,
                              placeholder="Ej.: Somos un restaurante. El gas, la limpieza y los útiles son gasto; "
                                          "solo las bebidas y abarrotes que revendemos son mercadería.",
                              help="La IA las lee en cada documento y tienen prioridad sobre sus reglas generales.")
-        st.caption(f"País: {p['nombre']} (fijo) · Moneda: {p['moneda']}")
+        st.caption(f"País: {p['nombre']} (fijo) · Moneda: {emp['moneda']}")
         if st.form_submit_button("Guardar", type="primary"):
             idn = normalizar_id(idf)
             act = act_otra.strip() if act_sel == paises.OTRA else act_sel
@@ -706,8 +753,8 @@ def pg_config(owner, emp, p, docs):
             elif not re.fullmatch(p["id_regex"], idn):
                 st.error(f"El {p['id_fiscal']} no tiene un formato válido. Ejemplo: {p['id_ejemplo']}.")
             else:
-                db.guardar_empresa(owner, dict(nombre=nombre.strip(), id_fiscal=idn, regimen=regimen, pct_renta=pct, actividad=act,
-                                               notas_ia=notas.strip(), modo=modo_sel))
+                db.guardar_empresa(owner, dict(nombre=nombre.strip(), id_fiscal=idn, regimen=regimen.strip(), pct_renta=pct, actividad=act,
+                                               tasa_renta=tasa_renta, notas_ia=notas.strip(), modo=modo_sel))
                 st.success("Guardado"); st.rerun()
     if modo_actual == "lector":
         st.subheader("Conexión con Claude (AWS)")

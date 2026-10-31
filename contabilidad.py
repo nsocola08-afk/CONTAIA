@@ -85,10 +85,10 @@ def impuestos_por_mes(docs, pais, pct):
         if d["estado"] != "registrado":
             continue
         m = d["fecha"][:7]
-        f = filas.setdefault(m, {"Periodo": m, "Ventas gravadas": 0.0, "Impuesto débito": 0.0, "Impuesto crédito": 0.0,
+        f = filas.setdefault(m, {"Periodo": m, "Ventas gravadas": 0.0, "Ventas no gravadas": 0.0, "Impuesto débito": 0.0, "Impuesto crédito": 0.0,
                                   **{n: 0.0 for n, _ in cols_nom}})
         if d["tipo"] == "venta":
-            f["Ventas gravadas"] += d["base"]; f["Impuesto débito"] += d["impuesto"]
+            f["Ventas gravadas"] += d["base"]; f["Ventas no gravadas"] += d["no_gravado"]; f["Impuesto débito"] += d["impuesto"]
         elif d["tipo"] == "compra":
             f["Impuesto crédito"] += d["impuesto"]
         for l in d["asiento"]:
@@ -101,7 +101,7 @@ def impuestos_por_mes(docs, pais, pct):
         f = filas[m]
         f[f"{pais['impuesto']} a pagar (+) / a favor (−)"] = f["Impuesto débito"] - f["Impuesto crédito"]
         if pct:
-            f[etiqueta_pct] = f["Ventas gravadas"] * pct / 100
+            f[etiqueta_pct] = (f["Ventas gravadas"] + f["Ventas no gravadas"]) * pct / 100   # sobre todos los ingresos
         out.append({k: round(v, 2) if isinstance(v, float) else v for k, v in f.items()})
     return pd.DataFrame(out)
 
