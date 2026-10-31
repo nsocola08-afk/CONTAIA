@@ -221,9 +221,17 @@ def tabla(df, **kw):
 
 
 def estado(filas):
-    """Estado financiero completo, sin scroll interno. Los títulos de sección no llevan importe."""
-    df = pd.DataFrame([(c, "" if v is None else money(v)) for c, v in filas], columns=["Concepto", "Importe"])
-    st.table(df.set_index("Concepto"))
+    """Estado financiero completo, sin scroll interno. Filas con 3er elemento "t" = total (celeste y negrita)."""
+    filas = [tuple(f) + (("",) if len(f) == 2 else ()) for f in filas]
+    df = pd.DataFrame([(c, "" if v is None else money(v)) for c, v, _ in filas], columns=["Concepto", "Importe"])
+    tot = [i for i, f in enumerate(filas) if f[2] == "t"]
+    css = "background-color:#d9e8f6; font-weight:700; color:#14284a"
+    tot_idx = set(tot)
+    n = len(df)
+    sty = df.style.apply(lambda d: pd.DataFrame([[css] * d.shape[1] if i in tot_idx else [""] * d.shape[1]
+                                                 for i in range(n)], index=d.index, columns=d.columns), axis=None)
+    sty = sty.set_properties(subset=["Importe"], **{"text-align": "right"}).hide(axis="index")
+    st.table(sty)
 
 
 def a_excel(hojas):
@@ -681,22 +689,28 @@ def pg_eeff(owner, emp, p, docs):
         t_renta = float(emp.get("tasa_renta") or 0)
         renta = round(max(0.0, e["antes_impuestos"]) * t_renta / 100, 2)
         extra = ([(f"(−) Impuesto a la renta estimado ({t_renta:g}%)", -renta),
-                  ("RESULTADO NETO ESTIMADO", e["antes_impuestos"] - renta)] if t_renta > 0 else [])
-        estado([("Ventas", e["ventas"]), ("(−) Descuentos y devoluciones", -e["descuentos"]), ("VENTAS NETAS", e["ventas_netas"]),
-                ("(−) Costo de ventas / compras", -e["costo"]), ("UTILIDAD BRUTA", e["utilidad_bruta"]),
+                  ("RESULTADO NETO ESTIMADO", e["antes_impuestos"] - renta, "t")] if t_renta > 0 else [])
+        estado([("Ventas", e["ventas"]), ("(−) Descuentos y devoluciones", -e["descuentos"]), ("VENTAS NETAS", e["ventas_netas"], "t"),
+                ("(−) Costo de ventas / compras", -e["costo"]), ("UTILIDAD BRUTA", e["utilidad_bruta"], "t"),
                 ("(−) Gastos de personal", -e["personal"]), ("(−) Servicios de terceros", -e["servicios"]),
                 ("(−) Tributos", -e["tributos"]), ("(−) Otros gastos de gestión", -e["otros_gastos"]),
-                ("(−) Depreciación", -e["depreciacion"]), ("UTILIDAD OPERATIVA", e["utilidad_operativa"]),
+                ("(−) Depreciación", -e["depreciacion"]), ("UTILIDAD OPERATIVA", e["utilidad_operativa"], "t"),
                 ("(+) Otros ingresos", e["otros_ingresos"]), ("(−) Gastos financieros", -e["financieros"]),
-                ("RESULTADO ANTES DE IMPUESTOS", e["antes_impuestos"])] + extra)
+                ("RESULTADO ANTES DE IMPUESTOS", e["antes_impuestos"], "t")] + extra)
         if extra:
             st.caption("Estimación: la tasa anual se aplica a la utilidad del periodo elegido. La determinación definitiva del "
                        "impuesto la hace tu contador en la declaración anual.")
     elif elegido == opciones[1]:
         A, P, Pt, ta, tp, tpt = cont.situacion_financiera(df_all, g, per)
-        estado([("ACTIVO", None)] + list(A.items()) + [("TOTAL ACTIVO", ta), ("PASIVO", None)] + list(P.items())
-               + [("Total pasivo", tp), ("PATRIMONIO", None)] + list(Pt.items())
-               + [("Total patrimonio", tpt), ("TOTAL PASIVO + PATRIMONIO", tp + tpt)])
+        corr = ["Efectivo y equivalentes", "Cuentas por cobrar", "Inventarios", "Tributos por recuperar"]
+        Ac = [(k, v) for k, v in A.items() if k in corr]
+        Anc = [(k, v) for k, v in A.items() if k not in corr]
+        estado([("ACTIVO", None, "t"), ("ACTIVO CORRIENTE", None, "t")] + Ac
+               + [("Total activo corriente", sum(v for _, v in Ac), "t"), ("ACTIVO NO CORRIENTE", None, "t")] + Anc
+               + [("Total activo no corriente", sum(v for _, v in Anc), "t"), ("TOTAL ACTIVO", ta, "t"),
+                  ("PASIVO", None, "t")] + list(P.items())
+               + [("Total pasivo", tp, "t"), ("PATRIMONIO", None, "t")] + list(Pt.items())
+               + [("Total patrimonio", tpt, "t"), ("TOTAL PASIVO + PATRIMONIO", tp + tpt, "t")])
         if abs(ta - tp - tpt) > 0.05:
             st.error("El balance no cuadra: revisa los asientos (puede faltar el aporte de capital o saldos iniciales).")
         else:
