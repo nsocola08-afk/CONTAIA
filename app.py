@@ -257,6 +257,14 @@ def pg_dashboard(owner, emp, p, docs):
 def pg_subir(owner, emp, p, docs):
     st.header("Subir documentos")
     st.write("Facturas, boletas, recibos por honorarios, planillas o vouchers (PDF, PNG, JPG). Máx. 4.5 MB por archivo.")
+    OPC_NAT = {"Que la IA decida": "", "Mercadería para reventa": "Si es una compra, es MERCADERÍA PARA REVENTA (cuenta de compras de mercadería).",
+               "Gasto (consumo u operación)": "Si es una compra, es un GASTO de consumo u operación (NO mercadería): usa una cuenta de gasto adecuada al concepto.",
+               "Activo fijo": "Si es una compra, es un ACTIVO FIJO (inmuebles, maquinaria y equipo)."}
+    k1, k2 = st.columns([1, 2])
+    nat = k1.selectbox("Tipo de compra (opcional)", list(OPC_NAT), key="nat_up",
+                       help="Se aplica a todos los archivos de esta tanda. Si subes documentos mezclados, deja «Que la IA decida» y corrige después con Reclasificar.")
+    nota = k2.text_input("Indicación para la IA (opcional)", key="nota_up", placeholder="Ej.: el balón de gas es gasto de cocina")
+    pista = " ".join(x for x in (OPC_NAT[nat], nota.strip()) if x)
     n = st.session_state.setdefault("up_n", 0)
     archivos = st.file_uploader("Arrastra tus documentos aquí", type=["pdf", "png", "jpg", "jpeg", "webp"],
                                 accept_multiple_files=True, key=f"up_{n}")
@@ -266,7 +274,7 @@ def pg_subir(owner, emp, p, docs):
             with st.spinner(f"Claude está leyendo {f.name}…"):
                 try:
                     datos = f.getvalue()
-                    doc = ia.extraer(f.name, f.type or "", datos, emp, p)
+                    doc = ia.extraer(f.name, f.type or "", datos, emp, p, pista)
                     db.crear_documento(owner, doc, f.name, f.type or "", datos)
                 except Exception as e:  # noqa: BLE001
                     errores.append(f"{f.name}: {e}")
@@ -299,6 +307,25 @@ def revisar(owner, emp, p, d):
         glosa = c3.text_input("Glosa", d["glosa"], key=f"g_{d['id']}")
         st.caption(f"{d['contraparte_nombre']} ({d['contraparte_id']}) · Base {money(d['base'])} · "
                    f"{p['impuesto']} {money(d['impuesto'])} · Total {money(d['total'])}")
+        if tipo == "compra":
+            opts = ia.opciones_naturaleza(p)
+            nombres = list(opts)
+            r1, r2, r3 = st.columns([1.3, 2, 1])
+            nat_r = r1.selectbox("Naturaleza de la compra", nombres, index=ia.naturaleza_actual(d["asiento"], p), key=f"nat_{d['id']}")
+            actuales = [str(l["cuenta"]) for l in d["asiento"] if int(l.get("grupo", 1) or 1) == 1 and l["debe"] > 0]
+            idx_c = next((opts[nat_r].index(c) for c in actuales if c in opts[nat_r]), 0)
+            cta_r = r2.selectbox("Cuenta", opts[nat_r], index=idx_c, format_func=lambda c: f"{c} – {plan[c]}", key=f"ctan_{d['id']}_{nat_r}")
+            r3.write("")
+            if r3.button("Reclasificar", key=f"rec_{d['id']}", help="Cambia la cuenta de la compra y rehace los asientos de destino"):
+                res = ia.reclasificar_compra(d["asiento"], p, cta_r)
+                if res:
+                    nuevo, al = res
+                    previas = [x for x in d["alertas"] if "destino" not in x.lower()]
+                    db.actualizar_documento(owner, d["id"], asiento=nuevo,
+                                            alertas=[f"Reclasificado por ti a: {cta_r} {plan[cta_r]}."] + previas + al)
+                    st.rerun()
+                else:
+                    st.error("No se pudo reclasificar: revisa que el asiento tenga la compra y su contrapartida.")
         if ia.pide_costo_venta(d["asiento"], d["tipo"], p):
             c1, c2 = st.columns([3, 1])
             costo = c1.number_input("Costo de la mercadería vendida (para el asiento de costo de ventas)", min_value=0.0,
@@ -457,13 +484,18 @@ def pg_config(owner, emp, p, docs):
         pct = (st.number_input(f"% {p['pago_cuenta_label']} (sobre ventas)", value=float(emp["pct_renta"] or 0), step=0.1)
                if con_pct else 0.0)
         act = st.selectbox("Actividad", p["actividades"], index=p["actividades"].index(emp["actividad"]) if emp["actividad"] in p["actividades"] else 0)
+        notas = st.text_area("Instrucciones permanentes para la IA (opcional)", emp.get("notas_ia") or "", height=120,
+                             placeholder="Ej.: Somos un restaurante. El gas, la limpieza y los útiles son gasto; "
+                                         "solo las bebidas y abarrotes que revendemos son mercadería.",
+                             help="La IA las lee en cada documento y tienen prioridad sobre sus reglas generales.")
         st.caption(f"País: {p['nombre']} (fijo) · Moneda: {p['moneda']}")
         if st.form_submit_button("Guardar", type="primary"):
             idn = normalizar_id(idf)
             if not re.fullmatch(p["id_regex"], idn):
                 st.error(f"El {p['id_fiscal']} no tiene un formato válido. Ejemplo: {p['id_ejemplo']}.")
             else:
-                db.guardar_empresa(owner, dict(nombre=nombre.strip(), id_fiscal=idn, regimen=regimen, pct_renta=pct, actividad=act))
+                db.guardar_empresa(owner, dict(nombre=nombre.strip(), id_fiscal=idn, regimen=regimen, pct_renta=pct, actividad=act,
+                                               notas_ia=notas.strip()))
                 st.success("Guardado"); st.rerun()
     st.subheader("Conexión con Claude (AWS)")
     st.caption(f"Modelo: `{ia.MODEL_ID}` · Región: `{ia.REGION}`")

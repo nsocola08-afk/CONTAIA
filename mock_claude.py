@@ -4,7 +4,7 @@ import random
 import paises
 
 
-def respuesta_falsa(nombre, empresa):
+def respuesta_falsa(nombre, empresa, pista=""):
     cb = paises.get_pais(empresa["pais"])["cuentas_base"]
     tasa = paises.get_pais(empresa["pais"])["tasa_impuesto"] or 0.18
     base = round(random.choice([500, 1200, 2500, 8000]), 2)
@@ -20,11 +20,15 @@ def respuesta_falsa(nombre, empresa):
                 "asiento": [{"cuenta": cb["clientes"], "nombre": "x", "debe": total, "haber": 0},
                             {"cuenta": cb["iva_debito"], "nombre": "x", "debe": 0, "haber": igv},
                             {"cuenta": cb["ventas"], "nombre": "x", "debe": 0, "haber": base}], "alertas": []}
+    cuenta_compra = cb["compras"]
+    if "gasto" in pista.lower():
+        g = paises.get_pais(empresa["pais"])
+        cuenta_compra = next(c for c, _ in g["plan"] if c.startswith(("6362", "5135", "5303", "603.52")))
     return {"tipo": "compra", "tipo_comprobante": "Factura", "serie": "F002", "numero": n, "fecha": "2026-10-10",
             "emisor_id": "20100070970", "emisor_nombre": "Proveedor de Prueba S.A.", "receptor_id": mi,
             "receptor_nombre": empresa["nombre"], "moneda_original": "PEN", "tipo_cambio": 0,
             "base_imponible": base, "impuesto": igv, "no_gravado": 0, "total": total, "glosa": "Compra de mercaderías",
-            "asiento": [{"cuenta": cb["compras"], "nombre": "x", "debe": base, "haber": 0},
+            "asiento": [{"cuenta": cuenta_compra, "nombre": "x", "debe": base, "haber": 0},
                         {"cuenta": cb["iva_credito"], "nombre": "x", "debe": igv, "haber": 0},
                         {"cuenta": cb["proveedores"], "nombre": "x", "debe": 0, "haber": total}],
             "alertas": ["Factura con posible detracción (prueba)."]}

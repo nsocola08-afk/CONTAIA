@@ -11,6 +11,8 @@ from datetime import date
 import boto3
 from botocore.config import Config
 
+import contabilidad
+
 REGION = os.environ.get("AWS_REGION", "us-east-1")
 MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-haiku-5-5")
 
@@ -61,6 +63,9 @@ def _texto(resp):
 
 def _prompt_sistema(empresa, pais):
     plan = "\n".join(f"{c} | {n}" for c, n in pais["plan"])
+    notas = (empresa.get("notas_ia") or "").strip()
+    bloque_notas = (f"\nINSTRUCCIONES PERMANENTES DEL USUARIO (tienen prioridad sobre las reglas generales; el asiento debe cuadrar siempre)\n{notas}\n"
+                    if notas else "")
     return f"""Eres un contador público experto en {pais.get('contexto', pais['nombre'])}. Lees comprobantes y propones el asiento contable.
 
 EMPRESA QUE USA EL SISTEMA
@@ -75,6 +80,15 @@ CÓMO CLASIFICAR
 - Si la empresa es el receptor/adquirente, es una COMPRA.
 - Planillas o boletas de pago de trabajadores: "planilla". Recibos por honorarios: "honorarios".
 - Vouchers bancarios, cobranzas, pagos, aportes u otros movimientos: "otro".
+
+{bloque_notas}
+CLASIFICACIÓN DE COMPRAS (muy importante)
+- MERCADERÍA: bienes que la empresa compra para revender sin transformarlos. Va a la cuenta de compras de mercadería.
+- GASTO: bienes de consumo y servicios de la operación (gas, limpieza, útiles, luz, alquiler, honorarios, etc.). Va a una cuenta de gasto.
+- ACTIVO FIJO: bienes duraderos de uso propio (equipos, muebles, vehículos). Va a una cuenta de inmuebles, maquinaria y equipo.
+- Si el usuario indica la naturaleza de la compra (en sus instrucciones o junto al documento), OBEDÉCELA sin discutirla.
+- Si no la indica, usa el concepto del comprobante y la actividad de la empresa. Si dudas entre mercadería y gasto, elige la opción
+  más probable y deja una alerta que pregunte explícitamente, para que el usuario pueda corregirla.
 
 REGLAS CONTABLES DEL PAÍS
 {pais['reglas_ia']}
@@ -269,6 +283,47 @@ def pide_costo_venta(doc_o_asiento, tipo, pais):
     return vende and not tiene
 
 
+def opciones_naturaleza(pais):
+    """Cuentas que ofrece el botón Reclasificar según la naturaleza de la compra."""
+    g, cc = pais["grupos"], contabilidad.coincide
+    gasto = [c for c, _ in pais["plan"] if any(cc(c, g[k]) for k in ("servicios", "otros_gastos", "tributos"))]
+    activo = [c for c, n in pais["plan"] if cc(c, g["fijo"]) and "depreciación" not in n.lower()]
+    return {"Mercadería para reventa": [pais["cuentas_base"]["compras"]],
+            "Gasto (consumo u operación)": gasto, "Activo fijo": activo}
+
+
+def naturaleza_actual(asiento, pais):
+    """Indica cuál opción de opciones_naturaleza describe hoy el asiento (para preseleccionarla)."""
+    op = opciones_naturaleza(pais)
+    cuentas = [str(l["cuenta"]) for l in asiento if int(l.get("grupo", 1) or 1) == 1 and l["debe"] > 0]
+    merc = pais["cuentas_base"]["compras"]
+    if any(c.startswith(merc[:3]) for c in cuentas):
+        return 0
+    for i, nombre in enumerate(op):
+        if i and any(c in op[nombre] for c in cuentas):
+            return i
+    return 0
+
+
+def reclasificar_compra(asiento, pais, cuenta):
+    """Cambia la cuenta de la base de una compra (mercadería, gasto o activo fijo) y regenera los asientos
+    de destino. Conserva las líneas de impuesto y de contrapartida (proveedores, caja, bancos), sin importar
+    de qué lado estén (una nota de crédito las invierte). Devuelve (asiento, alertas) o None."""
+    g, cc, plan = pais["grupos"], contabilidad.coincide, dict(pais["plan"])
+    fijas = g["impuestos"] + g["cxp"] + g["remuneraciones"] + g["efectivo"] + g["cxc"]
+    g1 = [l for l in asiento if int(l.get("grupo", 1) or 1) == 1]
+    mantener = [dict(l, grupo=1) for l in g1 if cc(str(l["cuenta"]), fijas)]
+    base = round(sum(l["debe"] - l["haber"] for l in g1 if not cc(str(l["cuenta"]), fijas)), 2)
+    if abs(base) < 0.01 or cuenta not in plan:
+        return None
+    linea = {"cuenta": cuenta, "nombre": plan[cuenta], "debe": base if base > 0 else 0.0,
+             "haber": -base if base < 0 else 0.0, "grupo": 1}
+    doc = {"tipo": "compra", "asiento": [linea] + mantener, "alertas": []}
+    agregar_destino(doc, pais)
+    agregar_destino_funcion(doc, pais)
+    return doc["asiento"], doc["alertas"]
+
+
 def validar_asiento(asiento):
     """Cada asiento (grupo 1, 2…) debe cuadrar por separado."""
     grupos = {}
@@ -280,16 +335,17 @@ def validar_asiento(asiento):
     return ok, sum(d for d, _ in grupos.values()), sum(h for _, h in grupos.values())
 
 
-def extraer(nombre, mime, datos, empresa, pais):
+def extraer(nombre, mime, datos, empresa, pais, pista=""):
     """Llama a Claude y devuelve el documento normalizado. Reintenta una vez si el JSON viene mal."""
     if len(datos) > LIMITE_BYTES:
         raise ValueError("El archivo supera 4.5 MB. Comprímelo o sube una foto más liviana.")
     if os.environ.get("CONTAIA_MOCK") == "1":  # solo para pruebas sin AWS
         from mock_claude import respuesta_falsa
-        return normalizar(respuesta_falsa(nombre, empresa), empresa, pais)
+        return normalizar(respuesta_falsa(nombre, empresa, pista), empresa, pais)
 
     mensajes = [{"role": "user", "content": [_bloque_documento(nombre, mime, datos),
-                                              {"text": "Analiza este documento y responde solo con el JSON indicado."}]}]
+                                              {"text": "Analiza este documento y responde solo con el JSON indicado."
+                                                       + (f"\n\nINDICACIÓN DEL USUARIO PARA ESTE DOCUMENTO (obligatoria): {pista.strip()}" if pista.strip() else "")}]}]
     ultimo_error = None
     for intento in range(2):
         try:
