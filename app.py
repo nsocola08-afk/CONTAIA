@@ -2,7 +2,7 @@ import io
 import os
 import re
 import uuid
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -12,6 +12,7 @@ from streamlit_cookies_controller import CookieController
 import claude_bedrock as ia
 import contabilidad as cont
 import db
+import operaciones as ops
 import paises
 
 st.set_page_config(page_title="ContaIA", page_icon="📒", layout="wide")
@@ -49,6 +50,7 @@ button[data-testid="stBaseButton-primary"]:hover, button[data-testid="stBaseButt
 [data-testid="stSidebar"] label[data-testid="stRadioOption"]:hover{background:#c9d4e4}
 [data-testid="stSidebar"] label[data-testid="stRadioOption"][data-selected="true"]{background:#1f3a5f}
 [data-testid="stSidebar"] label[data-testid="stRadioOption"][data-selected="true"] *{color:#fff !important}
+[data-testid="stVerticalBlockBorderWrapper"]{border-radius:0 !important}
 /* Selector de estado financiero: botones rectangulares */
 [data-testid="stButtonGroup"] button{border-radius:0 !important; box-shadow:none !important; border:0 !important;
   background:#dde4ee !important; color:#1f3a5f !important; font-weight:600 !important; padding:.55rem 1.2rem !important;}
@@ -110,20 +112,56 @@ def normalizar_id(texto):
     return re.sub(r"[^0-9A-Z]", "", (texto or "").upper())
 
 
+MODOS = {"lector": "Lector de facturas", "simple": "Modo simple"}
+
+
+def elegir_modo():
+    """Primera pantalla: cómo se van a registrar las operaciones."""
+    st.title("📒 Bienvenido a ContaIA")
+    st.subheader("¿Cómo quieres trabajar?")
+    st.caption("Los dos modos usan los mismos reportes. Puedes cambiar de modo después en Configuración.")
+    c1, c2 = st.columns(2)
+    with c1:
+        with st.container(border=True):
+            st.markdown("### 📷 Lector de facturas")
+            st.write("Subes facturas, boletas, planillas o vouchers (PDF o foto). La IA los lee, los clasifica y propone el asiento. "
+                     "Tú revisas y registras.")
+            st.caption("Usa Claude en AWS (tiene un costo por documento).")
+            if st.button("Usar el lector de facturas", key="modo_lector", type="primary"):
+                st.session_state.modo_sel = "lector"
+                st.rerun()
+    with c2:
+        with st.container(border=True):
+            st.markdown("### ✍️ Modo simple")
+            st.write("Sin importar archivos. Tú registras cada operación (venta, compra, gasto, planilla…) llenando sus datos: "
+                     "documento, moneda, tipo de cambio, monto e impuesto. La app arma el asiento.")
+            st.caption("No usa IA ni AWS: no tiene costo por documento.")
+            if st.button("Usar el modo simple", key="modo_simple", type="primary"):
+                st.session_state.modo_sel = "simple"
+                st.rerun()
+
+
 def bienvenida(owner):
     st.title("📒 Bienvenido a ContaIA")
+    modo = st.session_state["modo_sel"]
+    m1, m2 = st.columns([4, 1])
+    m1.info(f"Modo elegido: **{MODOS[modo]}**")
+    if m2.button("Cambiar modo", key="cambiar_modo"):
+        st.session_state.pop("modo_sel", None)
+        st.rerun()
     st.write("Antes de empezar, cuéntanos sobre tu empresa. Con estos datos Claude usará el plan contable y los impuestos de tu país.")
     disp = {p["nombre"]: c for c, p in sorted(paises.PAISES.items(), key=lambda x: (x[0] != "ST", x[1]["nombre"]))}
     pais_nombre = st.selectbox("País", list(disp), help="Cada país usa su propio plan de cuentas e impuestos.")
     if paises.PROXIMAMENTE:
         st.caption("Próximamente: " + ", ".join(paises.PROXIMAMENTE))
     p = paises.get_pais(disp[pais_nombre])
+    act_sel = st.selectbox("Giro del negocio", p["actividades"], help="La IA usa el giro para decidir qué es mercadería, materia prima, gasto o activo.")
+    act_otra = st.text_input("Especificar giro", max_chars=60, placeholder="Ej.: inmobiliaria, clínica, transporte") if act_sel == paises.OTRA else ""
     with st.form("alta"):
         nombre = st.text_input("Nombre o razón social de la empresa")
         idf = st.text_input(f"{p['id_fiscal']} (número de identificación tributaria)", max_chars=20,
                             placeholder=f"Ej.: {p['id_ejemplo']}")
         regimen = st.selectbox("Régimen tributario", list(p["regimenes"]))
-        actividad = st.selectbox("Actividad principal", p["actividades"])
         c1, c2 = st.columns(2)
         if p.get("monedas"):
             moneda = c1.selectbox("Moneda principal", p["monedas"], index=p["monedas"].index(p["moneda"]))
@@ -137,14 +175,18 @@ def bienvenida(owner):
         ok = st.form_submit_button("Comenzar", type="primary")
     if ok:
         idn = normalizar_id(idf)
+        actividad = act_otra.strip() if act_sel == paises.OTRA else act_sel
         if not nombre.strip():
             st.error("Escribe el nombre de la empresa.")
+        elif not actividad:
+            st.error("Especifica el giro del negocio (por ejemplo: inmobiliaria).")
         elif not re.fullmatch(p["id_regex"], idn):
             st.error(f"El {p['id_fiscal']} no tiene un formato válido para {p['nombre']}. Ejemplo: {p['id_ejemplo']}.")
         else:
             db.guardar_empresa(owner, dict(nombre=nombre.strip(), pais=p["codigo"], id_fiscal=idn,
                                            regimen=regimen, moneda=moneda, actividad=actividad,
-                                           pct_renta=p["regimenes"][regimen] or 0))
+                                           pct_renta=p["regimenes"][regimen] or 0, modo=modo))
+            st.session_state.pop("modo_sel", None)
             st.rerun()
 
 
@@ -182,7 +224,7 @@ def etiqueta_asiento(lineas, g):
         return "Destino del gasto por función"
     if any(c.startswith("69") for c in cuentas):
         return "Costo de ventas"
-    if any(c.startswith("20") for c in cuentas):
+    if any(c.startswith(("20", "24", "25", "26")) for c in cuentas):
         return "Destino de la compra"
     return f"Asiento {g}"
 
@@ -214,7 +256,10 @@ def selector_periodo(docs, key):
 def pg_dashboard(owner, emp, p, docs):
     st.header("Dashboard")
     if not any(d["estado"] == "registrado" for d in docs):
-        st.info("Aún no hay documentos registrados. Ve a **Subir documentos** para cargar tu primera factura.")
+        if (emp.get("modo") or "lector") == "simple":
+            st.info("Aún no hay operaciones registradas. Ve a **Registrar operación** para cargar la primera.")
+        else:
+            st.info("Aún no hay documentos registrados. Ve a **Subir documentos** para cargar tu primera factura.")
         return
     per = selector_periodo(docs, "per_dash")
     df_all = cont.lineas(docs)
@@ -266,6 +311,9 @@ def pg_subir(owner, emp, p, docs):
     OPC_NAT = {"Que la IA decida": "", "Mercadería para reventa": "Si es una compra, es MERCADERÍA PARA REVENTA (cuenta de compras de mercadería).",
                "Gasto (consumo u operación)": "Si es una compra, es un GASTO de consumo u operación (NO mercadería): usa una cuenta de gasto adecuada al concepto.",
                "Activo fijo": "Si es una compra, es un ACTIVO FIJO (inmuebles, maquinaria y equipo)."}
+    for nombre_n in p.get("naturalezas_extra", {}):
+        OPC_NAT[nombre_n] = (f"Si es una compra, es: {nombre_n.upper()} (usa la cuenta de compras que corresponda a esa naturaleza, "
+                             "NO la de mercadería para reventa).")
     k1, k2 = st.columns([1, 2])
     nat = k1.selectbox("Tipo de compra (opcional)", list(OPC_NAT), key="nat_up",
                        help="Se aplica a todos los archivos de esta tanda. Si subes documentos mezclados, deja «Que la IA decida» y corrige después con Reclasificar.")
@@ -299,6 +347,150 @@ def pg_subir(owner, emp, p, docs):
         revisar(owner, emp, p, d)
 
 
+def pg_registrar(owner, emp, p, docs):
+    st.header("Registrar operación")
+    st.write("Elige el tipo de operación y llena sus datos. La app arma el asiento y tú lo revisas antes de registrarlo.")
+    n = st.session_state.setdefault("reg_n", 0)
+    local, imp_n, plan = emp["moneda"], p["impuesto"], dict(p["plan"])
+    if st.session_state.pop("reg_ok", False):
+        st.success("Asiento generado. Revísalo abajo, en «Por revisar», y pulsa Registrar.")
+    tipo_op = st.selectbox("Tipo de operación", ops.TIPOS, key="reg_tipo")
+    K = lambda x: f"r{n}_{ops.TIPOS.index(tipo_op)}_{x}"  # noqa: E731
+    es_doc = tipo_op in ops.TIPOS[:5]                      # venta, compra, gasto, activo fijo, honorarios
+    con_monto = tipo_op not in ("Planilla", "Asiento manual")
+    opc = ia.opciones_naturaleza(p)
+    fmt = lambda c: f"{c} – {plan[c]}"                    # noqa: E731
+    d = {"moneda": local, "tc": 1.0, "glosa": "", "documento": "", "id": "", "nombre": "", "forma": ops.FORMAS[1]}
+
+    with st.container(border=True):
+        c1, c2, c3 = st.columns(3)
+        d["fecha"] = c1.date_input("Fecha", value=date.today(), key=K("fecha")).isoformat()
+        if es_doc:
+            d["comprobante"] = c2.selectbox("Comprobante", ops.COMPROBANTES, key=K("comp"))
+            d["documento"] = c3.text_input("N° de documento (serie-número)", key=K("doc"), placeholder="F001-00123")
+            tercero = "Cliente" if tipo_op == "Venta" else ("Persona o proveedor" if tipo_op == "Honorarios" else "Proveedor")
+            t1, t2 = st.columns([1, 2])
+            d["id"] = t1.text_input(f"{p['id_fiscal']} del {tercero.lower()}", key=K("id"), placeholder=p["id_ejemplo"])
+            d["nombre"] = t2.text_input(f"Razón social o nombre del {tercero.lower()}", key=K("nom"))
+        elif tipo_op in ("Cobranza a cliente", "Pago a proveedor o deuda", "Aporte de capital"):
+            d["documento"] = c2.text_input("N° de operación o voucher", key=K("doc"))
+            d["nombre"] = c3.text_input("Cliente, proveedor o socio (opcional)", key=K("nom"))
+
+        if con_monto:
+            m1, m2, m3 = st.columns(3)
+            otras = [m for m in (p.get("monedas") or ["USD", "EUR"]) if m != local]
+            d["moneda"] = m1.selectbox("Moneda", [local] + otras, key=K("mon"))
+            if d["moneda"] != local:
+                d["tc"] = m2.number_input(f"Tipo de cambio (1 {d['moneda']} = ? {local})", min_value=0.0, value=0.0, step=0.01,
+                                          format="%.4f", key=K("tc"))
+            d["monto"] = m3.number_input("Monto", min_value=0.0, step=1.0, format="%.2f", key=K("monto"))
+
+        if es_doc:
+            etiquetas = {"incluido": f"El monto ya incluye {imp_n}", "agregar": f"Sumar {imp_n} al monto",
+                         "sin": f"Sin {imp_n} (no gravado o exonerado)"}
+            i1, i2 = st.columns([3, 1])
+            d["modo_imp"] = i1.radio("Impuesto", list(etiquetas), format_func=lambda k: etiquetas[k], horizontal=True, key=K("imp"))
+            d["tasa"] = (i2.number_input(f"Tasa de {imp_n} (%)", min_value=0.0, max_value=100.0, step=0.5,
+                                         value=round((p["tasa_impuesto"] or 0) * 100, 2), key=K("tasa"))
+                         if d["modo_imp"] != "sin" else 0.0)
+            d["forma"] = st.radio("Forma de pago o cobro", ops.FORMAS, horizontal=True, key=K("forma"))
+
+            if tipo_op == "Venta":
+                por_def = 1 if emp["actividad"] in ("Servicios", "Restaurante") else 0
+                vende = st.radio("Se vende", ["Mercaderías", "Servicios"], index=por_def, horizontal=True, key=K("vende"))
+                d["cuenta"] = p["cuentas_base"]["ventas" if vende == "Mercaderías" else "ventas_servicios"]
+            elif tipo_op == "Compra (mercadería, insumos)":
+                naturalezas = [k for k in opc if not k.startswith(("Gasto", "Activo"))]
+                a1, a2 = st.columns([1, 2])
+                nat = a1.selectbox("Naturaleza", naturalezas, key=K("nat"))
+                d["cuenta"] = a2.selectbox("Cuenta", opc[nat], format_func=fmt, key=K(f"cta_{nat}"))
+            elif tipo_op == "Gasto (servicios y consumo)":
+                d["cuenta"] = st.selectbox("Cuenta de gasto", opc["Gasto (consumo u operación)"], format_func=fmt, key=K("cta"))
+            elif tipo_op == "Activo fijo":
+                d["cuenta"] = st.selectbox("Cuenta de activo fijo", opc["Activo fijo"], format_func=fmt, key=K("cta"))
+            elif tipo_op == "Honorarios":
+                rets = p["honorarios"]["retenciones"]
+                d["retenciones"] = {}
+                for i, r in enumerate(rets):
+                    umbral = r.get("umbral")
+                    por_defecto = (d["monto"] >= umbral) if umbral else True
+                    d["retenciones"][i] = st.checkbox(r["label"] + (f" — corresponde si el pago es de {umbral:,.0f} o más" if umbral else ""),
+                                                      value=por_defecto, key=K(f"ret{i}_{por_defecto}"))
+                if not rets:
+                    st.caption("Este país no tiene retenciones automáticas aquí: si hay una, agrégala en el asiento antes de registrar.")
+        elif tipo_op == "Pago a proveedor o deuda":
+            d["destino"] = st.selectbox("¿Qué se paga?", ["Proveedores", "Remuneraciones por pagar", "Tributos por pagar"], key=K("dest"))
+            d["forma"] = st.radio("Se paga con", ops.FORMAS[1:], horizontal=True, key=K("forma"))
+        elif tipo_op in ("Cobranza a cliente", "Aporte de capital"):
+            d["forma"] = st.radio("Ingresa a", ops.FORMAS[1:], horizontal=True, key=K("forma"))
+        elif tipo_op == "Planilla":
+            cfg = p["planilla"]
+            d["moneda"] = local
+            b1, b2 = st.columns(2)
+            d["bruto"] = b1.number_input("Remuneración bruta total", min_value=0.0, step=1.0, format="%.2f", key=K("bruto"))
+            if cfg.get("aporte_pct"):
+                auto = b2.checkbox(f"Calcular {cfg['aporte_label']} automáticamente", value=True, key=K("auto"))
+                d["aporte"] = round(d["bruto"] * cfg["aporte_pct"] / 100, 2) if auto else b2.number_input(
+                    cfg["aporte_label"], min_value=0.0, step=1.0, format="%.2f", key=K("aporte"))
+            else:
+                d["aporte"] = b2.number_input(cfg["aporte_label"], min_value=0.0, step=1.0, format="%.2f", key=K("aporte"))
+            d["retenciones"] = {}
+            cols = st.columns(max(1, min(3, len(cfg["retenciones"]))))
+            for i, (label, cuenta) in enumerate(cfg["retenciones"]):
+                d["retenciones"][cuenta] = d["retenciones"].get(cuenta, 0.0) + cols[i % len(cols)].number_input(
+                    label, min_value=0.0, step=1.0, format="%.2f", key=K(f"ret{i}"))
+            neto = round(d["bruto"] - sum(d["retenciones"].values()), 2)
+            st.caption(f"Costo laboral: {money(d['bruto'] + d['aporte'], local)} · Neto a pagar a los trabajadores: {money(neto, local)}")
+
+        d["glosa"] = st.text_input("Descripción o glosa (opcional)", key=K("glosa"),
+                                   placeholder="Ej.: compra de hamburguesas, planilla de octubre…")
+
+        # vista previa de importes
+        if es_doc and d.get("monto", 0) > 0:
+            if d["moneda"] != local and d["tc"] <= 0:
+                st.warning("Escribe el tipo de cambio para ver los importes en moneda local.")
+            else:
+                v = ops.a_local(ops.importes(d["monto"], d["modo_imp"], d["tasa"], p.get("impuesto_sobre_total", False)), d["tc"] or 1)
+                st.caption(f"En {local}: base {money(v['base'])} · {imp_n} {money(v['impuesto'])} · "
+                           f"no gravado {money(v['no_gravado'])} · **total {money(v['total'])}**")
+
+    if st.button("Generar asiento", type="primary", key=K("gen")):
+        error = None
+        if con_monto and d["monto"] <= 0:
+            error = "Escribe un monto mayor a cero."
+        elif con_monto and d["moneda"] != local and d["tc"] <= 0:
+            error = "Escribe el tipo de cambio."
+        elif es_doc and d["modo_imp"] != "sin" and d["tasa"] <= 0:
+            error = f"Indica la tasa de {imp_n} o elige «Sin {imp_n}»."
+        elif tipo_op == "Planilla" and d["bruto"] <= 0:
+            error = "Escribe la remuneración bruta."
+        if error:
+            st.error(error)
+        else:
+            try:
+                constructor = {"Venta": ops.venta, "Compra (mercadería, insumos)": ops.compra, "Gasto (servicios y consumo)": ops.compra,
+                               "Activo fijo": ops.compra, "Honorarios": ops.honorarios, "Planilla": ops.planilla,
+                               "Cobranza a cliente": ops.cobranza, "Pago a proveedor o deuda": ops.pago,
+                               "Aporte de capital": ops.aporte_capital, "Asiento manual": ops.manual}[tipo_op]
+                doc = constructor(p, d)
+                if d["id"].strip() and not re.fullmatch(p["id_regex"], normalizar_id(d["id"])):
+                    doc["alertas"].append(f"El {p['id_fiscal']} escrito no tiene un formato válido para {p['nombre']}. Verifícalo.")
+                db.crear_documento(owner, doc, f"Registro manual – {tipo_op}", "", None)
+                st.session_state.reg_n = n + 1
+                st.session_state.reg_ok = True
+                st.rerun()
+            except (ValueError, KeyError) as e:
+                st.error(str(e))
+
+    st.divider()
+    pend = [x for x in docs if x["estado"] == "pendiente"]
+    st.subheader(f"Por revisar ({len(pend)})")
+    if not pend:
+        st.caption("No hay operaciones pendientes.")
+    for x in pend:
+        revisar(owner, emp, p, x)
+
+
 def revisar(owner, emp, p, d):
     plan = dict(p["plan"])
     ok_cuadre, td, th = ia.validar_asiento(d["asiento"])
@@ -311,7 +503,8 @@ def revisar(owner, emp, p, d):
         tipos = ["compra", "venta", "planilla", "honorarios", "otro"]
         tipo = c2.selectbox("Tipo", tipos, index=tipos.index(d["tipo"]) if d["tipo"] in tipos else 4, key=f"t_{d['id']}")
         glosa = c3.text_input("Glosa", d["glosa"], key=f"g_{d['id']}")
-        st.caption(f"{d['contraparte_nombre']} ({d['contraparte_id']}) · Base {money(d['base'])} · "
+        tercero = " ".join(x for x in (d["contraparte_nombre"], f"({d['contraparte_id']})" if d["contraparte_id"] else "") if x)
+        st.caption(f"{tercero + ' · ' if tercero else ''}Base {money(d['base'])} · "
                    f"{p['impuesto']} {money(d['impuesto'])} · Total {money(d['total'])}")
         if tipo == "compra":
             opts = ia.opciones_naturaleza(p)
@@ -482,6 +675,16 @@ def pg_documentos(owner, emp, p, docs):
 
 def pg_config(owner, emp, p, docs):
     st.header("Configuración")
+    acts = p["actividades"]
+    actual = emp["actividad"] or ""
+    en_lista = actual in acts and actual != paises.OTRA
+    act_sel = st.selectbox("Giro del negocio", acts, index=acts.index(actual) if en_lista else acts.index(paises.OTRA), key="cfg_act")
+    act_otra = st.text_input("Especificar giro", value="" if en_lista else (actual if actual != paises.OTRA else ""), max_chars=60,
+                             key="cfg_act_otra", placeholder="Ej.: inmobiliaria, clínica, transporte") if act_sel == paises.OTRA else ""
+    modo_actual = emp.get("modo") or "lector"
+    modo_sel = st.selectbox("Modo de trabajo", list(MODOS), index=list(MODOS).index(modo_actual), format_func=lambda k: MODOS[k],
+                            key="cfg_modo", help="Lector de facturas: la IA lee tus documentos. Modo simple: tú registras cada operación. "
+                                                 "Tus datos y reportes se conservan al cambiar.")
     with st.form("cfg"):
         nombre = st.text_input("Razón social", emp["nombre"])
         idf = st.text_input(p["id_fiscal"], emp["id_fiscal"])
@@ -490,7 +693,6 @@ def pg_config(owner, emp, p, docs):
         con_pct = any(v is not None for v in p["regimenes"].values())
         pct = (st.number_input(f"% {p['pago_cuenta_label']} (sobre ventas)", value=float(emp["pct_renta"] or 0), step=0.1)
                if con_pct else 0.0)
-        act = st.selectbox("Actividad", p["actividades"], index=p["actividades"].index(emp["actividad"]) if emp["actividad"] in p["actividades"] else 0)
         notas = st.text_area("Instrucciones permanentes para la IA (opcional)", emp.get("notas_ia") or "", height=120,
                              placeholder="Ej.: Somos un restaurante. El gas, la limpieza y los útiles son gasto; "
                                          "solo las bebidas y abarrotes que revendemos son mercadería.",
@@ -498,18 +700,22 @@ def pg_config(owner, emp, p, docs):
         st.caption(f"País: {p['nombre']} (fijo) · Moneda: {p['moneda']}")
         if st.form_submit_button("Guardar", type="primary"):
             idn = normalizar_id(idf)
-            if not re.fullmatch(p["id_regex"], idn):
+            act = act_otra.strip() if act_sel == paises.OTRA else act_sel
+            if not act:
+                st.error("Especifica el giro del negocio.")
+            elif not re.fullmatch(p["id_regex"], idn):
                 st.error(f"El {p['id_fiscal']} no tiene un formato válido. Ejemplo: {p['id_ejemplo']}.")
             else:
                 db.guardar_empresa(owner, dict(nombre=nombre.strip(), id_fiscal=idn, regimen=regimen, pct_renta=pct, actividad=act,
-                                               notas_ia=notas.strip()))
+                                               notas_ia=notas.strip(), modo=modo_sel))
                 st.success("Guardado"); st.rerun()
-    st.subheader("Conexión con Claude (AWS)")
-    st.caption(f"Modelo: `{ia.MODEL_ID}` · Región: `{ia.REGION}`")
-    if st.button("Probar conexión con AWS"):
-        with st.spinner("Probando…"):
-            ok, msg = ia.probar_conexion()
-        (st.success if ok else st.error)(msg)
+    if modo_actual == "lector":
+        st.subheader("Conexión con Claude (AWS)")
+        st.caption(f"Modelo: `{ia.MODEL_ID}` · Región: `{ia.REGION}`")
+        if st.button("Probar conexión con AWS"):
+            with st.spinner("Probando…"):
+                ok, msg = ia.probar_conexion()
+            (st.success if ok else st.error)(msg)
     st.subheader("Respaldo y recuperación")
     st.download_button("⬇ Descargar respaldo en Excel", a_excel({
         "Libro diario": df_diario(docs), "Compras": df_registro(docs, "compra"), "Ventas": df_registro(docs, "venta"),
@@ -519,12 +725,13 @@ def pg_config(owner, emp, p, docs):
              "guarda este enlace privado para recuperarlos (no lo compartas: quien lo tenga ve tu contabilidad):")
     st.code(enlace_recuperacion(owner), language=None)
     st.subheader("Empezar nuevamente")
-    st.write("Vuelves a la pantalla inicial para registrar los datos de una empresa (puedes cambiar de país). "
+    st.write("Vuelves a la pantalla inicial: eliges el modo de trabajo y registras los datos de una empresa (puedes cambiar de país). "
              "**Se borrarán los datos de la empresa, todos los documentos y los asientos.** Descarga antes tu respaldo.")
     ok_reset = st.checkbox("Entiendo que se borrará todo y no se puede deshacer", key="ok_reset")
     if st.button("Empezar nuevamente", disabled=not ok_reset, key="btn_reset"):
         db.borrar_empresa(owner)
-        for k in ("menu", "eeff_sel", "up_n", "up_err", "ok_reset", "nat_up", "nota_up", "per_dash", "per_eeff"):
+        for k in ("menu", "eeff_sel", "up_n", "up_err", "ok_reset", "nat_up", "nota_up", "per_dash", "per_eeff", "modo_sel",
+                  "reg_n", "reg_tipo", "reg_ok", "cfg_modo", "cfg_act", "cfg_act_otra"):
             st.session_state.pop(k, None)
         st.rerun()
     with st.expander("Zona de peligro"):
@@ -536,17 +743,22 @@ def pg_config(owner, emp, p, docs):
 owner = identificar()
 emp = db.get_empresa(owner)
 if not emp:
+    if "modo_sel" not in st.session_state:
+        elegir_modo()
+        st.stop()
     bienvenida(owner)
     st.stop()
 
 p = paises.get_pais(emp["pais"])
+modo = emp.get("modo") or "lector"
 docs = db.listar(owner)
 pend = sum(1 for d in docs if d["estado"] == "pendiente")
 
 with st.sidebar:
     st.markdown(f"### 📒 ContaIA\n**{emp['nombre']}**  \n{p['id_fiscal']} {emp['id_fiscal']} · {p['nombre']}")
+    entrada = ("registrar", "✍️ Registrar operación", pg_registrar) if modo == "simple" else ("subir", "⬆️ Subir documentos", pg_subir)
     paginas = {"dash": ("📊 Dashboard", pg_dashboard),
-               "subir": ("⬆️ Subir documentos", pg_subir),
+               entrada[0]: (entrada[1], entrada[2]),
                "diario": ("📘 Libro Diario", pg_diario),
                "compras": ("🧾 Registro de Compras", lambda o, e, pp, d: pg_registro("Registro de Compras", "compra", d)),
                "ventas": ("💰 Registro de Ventas", lambda o, e, pp, d: pg_registro("Registro de Ventas", "venta", d)),
@@ -558,7 +770,7 @@ with st.sidebar:
 
     sel = st.radio("Menú", list(paginas), format_func=lambda k: paginas[k][0], label_visibility="collapsed", key="menu")
     if pend:
-        st.warning(f"Tienes {pend} documento(s) por revisar en «Subir documentos».")
+        st.warning(f"Tienes {pend} {'operación(es)' if modo == 'simple' else 'documento(s)'} por revisar en «{entrada[1][2:].strip()}».")
     st.caption("Tus datos están ligados a este navegador. No borres las cookies ni uses modo incógnito; "
                "en Configuración tienes un enlace de recuperación y un respaldo.")
 

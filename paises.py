@@ -8,6 +8,46 @@ Para agregar un país nuevo: copia un bloque, cambia los datos y regístralo en 
 IMPORTANTE: antes de habilitar un país, verifica tasas y retenciones vigentes con un contador local.
 """
 
+OTRA = "Otra (especificar)"
+ACTIVIDADES = ["Comercio", "Servicios", "Restaurante", "Producción / industria", "Construcción", OTRA]
+
+# Criterio contable por giro. Se le entrega a la IA junto con el plan de cuentas del país.
+GUIAS_ACTIVIDAD = {
+    "Restaurante": """GIRO: RESTAURANTE. Criterio contable base:
+- Insumos de cocina que se transforman en platos (carnes como las hamburguesas, pollo, pescado, pan, verduras, frutas, lácteos, aceite,
+  salsas, especias, arroz, harinas) son MATERIA PRIMA, es decir, costo del negocio y no gasto operativo.
+- Bebidas y productos que se venden tal cual, sin prepararlos (gaseosas, agua, cerveza, golosinas) son MERCADERÍA para reventa.
+- Descartables y empaques para llevar o delivery (vasos, tapers, bolsas, cajas, cubiertos descartables) son ENVASES Y EMBALAJES.
+- Gas, electricidad, agua, teléfono e internet, limpieza, mantenimiento, alquiler del local, publicidad y honorarios son GASTO.
+- Cocinas, hornos, freidoras, refrigeradoras, campanas y mobiliario duradero son ACTIVO FIJO.
+- Utensilios menores (cuchillos, ollas pequeñas, vajilla) y uniformes son GASTO, salvo montos relevantes.
+- Ventas de comida y bebida preparada (en el local o delivery) son ingresos por servicios de restaurante.
+- Ante la duda entre dos opciones, elige la más probable y deja una alerta.""",
+    "Comercio": """GIRO: COMERCIO. Lo que la empresa compra para revender sin transformar es MERCADERÍA. Los bienes de consumo propio
+(útiles, limpieza, combustible de la operación) y los servicios son GASTO. Equipos y muebles duraderos son ACTIVO FIJO.""",
+    "Servicios": """GIRO: SERVICIOS. Casi todas las compras son GASTO (servicios, suministros, alquileres, honorarios). Casi no hay
+mercadería: no la asumas salvo que el comprobante lo indique. Equipos y muebles duraderos son ACTIVO FIJO.""",
+    "Producción / industria": """GIRO: PRODUCCIÓN. Lo que se transforma en el producto es MATERIA PRIMA; piezas, aditivos y suministros
+de planta son MATERIALES AUXILIARES O SUMINISTROS; empaques son ENVASES Y EMBALAJES. Maquinaria y herramientas duraderas son ACTIVO FIJO.
+Servicios generales (luz, agua, alquiler) son gasto o costo según su destino; si dudas, alerta.""",
+    "Construcción": """GIRO: CONSTRUCCIÓN. Materiales que se incorporan a la obra son materiales de obra (costo); maquinaria, equipos y herramientas
+duraderas son ACTIVO FIJO; alquiler de maquinaria, subcontratos y servicios son costo o gasto según la obra. Ante la duda, alerta.""",
+}
+
+
+def guia_actividad(pais, actividad):
+    """Texto de criterio contable para el giro; el específico del país tiene prioridad sobre el genérico."""
+    especifica = pais.get("guias_actividad", {})
+    if actividad in especifica:
+        return especifica[actividad]
+    if actividad in GUIAS_ACTIVIDAD:
+        return GUIAS_ACTIVIDAD[actividad]
+    if actividad:
+        return (f"GIRO DEL NEGOCIO (indicado por el usuario): {actividad}. Usa el concepto del comprobante y lo que es típico de ese giro "
+                "para decidir entre mercadería, materia prima, gasto o activo fijo; ante la duda, deja una alerta.")
+    return ""
+
+
 AVISO_BASE = ("Las reglas y cuentas son una base de trabajo: un contador local debe revisar los asientos, "
               "sobre todo retenciones, percepciones y casos especiales.")
 
@@ -20,7 +60,7 @@ PERU = {
     "inicio_ejercicio": "Enero", "reporte_impuestos": "PDT 621 / PLE",
     "regimenes": {"Régimen General": 1.5, "Régimen MYPE Tributario": 1.0, "Régimen Especial (RER)": 1.5},
     "pago_cuenta_label": "Renta pago a cuenta",
-    "actividades": ["Comercio", "Servicios", "Producción / industria", "Construcción", "Otra"],
+    "actividades": ACTIVIDADES,
     "aviso": AVISO_BASE,
     "grupos": {
         "ventas": ["70"], "descuentos": ["74"], "otros_ingresos": ["73", "75", "76", "77"],
@@ -38,7 +78,24 @@ PERU = {
     "cuentas_base": {"clientes": "1212", "proveedores": "4212", "iva_credito": "40111", "iva_debito": "40111",
                      "ventas": "70111", "compras": "60111", "capital": "5011", "banco": "1041"},
     # Asiento de destino de las compras de mercadería: Debe 20 Mercaderías / Haber 61 Variación de existencias
-    "destino_compra": {"cuentas_compra": ["601", "609"], "inventario": "2011", "variacion": "6111"},
+    "destino_compra": {"mapa": [
+        {"compra": ["601", "609"], "inventario": "2011", "variacion": "6111"},   # mercaderías
+        {"compra": ["602"], "inventario": "2411", "variacion": "6121"},          # materias primas
+        {"compra": ["604"], "inventario": "2611", "variacion": "6141"},          # envases y embalajes
+    ]},
+    "naturalezas_extra": {"Materia prima (insumos)": ["6021"], "Envases y empaques": ["6041"]},
+    "guias_actividad": {"Restaurante": """GIRO: RESTAURANTE. Criterio contable base (Perú):
+- Insumos de cocina que se transforman en platos (carnes como las hamburguesas, pollo, pescado, pan, verduras, frutas, lácteos, aceite,
+  salsas, especias, arroz, harinas): MATERIA PRIMA. Compra a 6021; la aplicación agrega sola el destino (Debe 2411 / Haber 6121).
+- Bebidas y productos que se venden tal cual, sin prepararlos (gaseosas, agua, cerveza, golosinas): MERCADERÍA. Compra a 60111.
+- Descartables y empaques para llevar o delivery (vasos, tapers, bolsas, cajas, cubiertos descartables): ENVASES Y EMBALAJES. Compra a 6041.
+- Gas (GLP) a 6362; electricidad a 6361; agua a 6363; teléfono e internet a 6364; alquiler del local a 6352; publicidad a 6371;
+  honorarios y asesoría a 6321; mantenimiento a 6341; limpieza y otros servicios a 6391. Todos son GASTO.
+- Cocinas, hornos, freidoras, refrigeradoras y mobiliario duradero: ACTIVO FIJO (333 maquinaria y equipo, 335 muebles, 336 equipos diversos).
+- Utensilios menores (cuchillos, ollas pequeñas, vajilla) y uniformes: GASTO (6391), salvo montos relevantes.
+- Ventas de comida y bebida preparada (local o delivery): ingreso por 70411 (ventas de servicios). No uses 70111.
+- El costo de ventas de un restaurante no se registra venta por venta: se determina al cierre con el inventario de insumos consumidos.
+- Ante la duda entre dos opciones, elige la más probable y deja una alerta."""},
     # Destino por función (elemento 9): Debe 94 / 95 — Haber 791. Aplica a gastos de las cuentas 62, 63, 64, 65 y 68.
     "destino_funcion": {"cuentas_gasto": ["62", "63", "64", "65", "68"], "administrativo": "94", "ventas": "95",
                         "ventas_prefijos": ["637"], "contrapartida": "791"},
@@ -90,6 +147,9 @@ PERU = {
         ("70111", "Ventas de mercaderías – Terceros"), ("70411", "Ventas de servicios – Terceros"),
         ("7411", "Descuentos y rebajas concedidos"), ("7591", "Otros ingresos de gestión"), ("7711", "Ingresos financieros"),
         ("6911", "Costo de ventas – Mercaderías manufacturadas"),
+        ("6021", "Compra de materias primas para productos manufacturados"), ("6041", "Compra de envases"),
+        ("6121", "Variación de existencias – Materias primas"), ("6141", "Variación de existencias – Envases y embalajes"),
+        ("2411", "Materias primas para productos manufacturados"), ("2611", "Envases"),
         ("791", "Cargas imputables a cuentas de costos y gastos"),
         ("94", "Gastos administrativos (destino por función)"), ("95", "Gastos de ventas (destino por función)"),
     ],
@@ -104,7 +164,7 @@ COLOMBIA = {
     "inicio_ejercicio": "Enero", "reporte_impuestos": "Formulario 300 (IVA) / 350 (retención)",
     "regimenes": {"Régimen ordinario (responsable de IVA)": None, "Régimen Simple de Tributación (RST)": None},
     "pago_cuenta_label": "Pago a cuenta",
-    "actividades": ["Comercio", "Servicios", "Producción / industria", "Construcción", "Otra"],
+    "actividades": ACTIVIDADES,
     "aviso": AVISO_BASE + " Subcuentas 240801 y 240802 propuestas para separar IVA generado y descontable.",
     "grupos": {
         "ventas": ["4135"], "descuentos": ["4175"], "otros_ingresos": ["42"],
@@ -168,7 +228,7 @@ MEXICO = {
     "regimenes": {"Persona moral – régimen general": None, "Persona física con actividad empresarial": None,
                   "RESICO persona física": None},
     "pago_cuenta_label": "Pago provisional",
-    "actividades": ["Comercio", "Servicios", "Producción / industria", "Construcción", "Otra"],
+    "actividades": ACTIVIDADES,
     "aviso": AVISO_BASE + " Tasa del 8% en la franja fronteriza solo si la factura la muestra.",
     "grupos": {
         "ventas": ["401"], "descuentos": ["402"], "otros_ingresos": [], "costo": ["501"],
@@ -254,7 +314,7 @@ _GRUPOS_ESTANDAR = {
 _NOMINA_ESTANDAR = {"gasto": ["52", "5301"], "aportes": ["2302", "2202"], "neto": ["2301", "2102"]}
 _BASE_ESTANDAR = {"clientes": "1201", "proveedores": "2101", "iva_credito": "1401", "iva_debito": "2201",
                   "ventas": "4101", "compras": "5101", "capital": "3101", "banco": "1102"}
-_ACTIVIDADES = ["Comercio", "Servicios", "Producción / industria", "Construcción", "Otra"]
+_ACTIVIDADES = ACTIVIDADES
 _AVISO_ESTANDAR = (AVISO_BASE + " Este país no usa un plan único obligatorio para todas las empresas: se aplica un plan "
                    "estándar de uso común que puedes adaptar con tu contador.")
 
@@ -392,6 +452,46 @@ ESTANDAR = {
 - Nota de crédito: invierte el asiento de la venta o la compra.
 """,
 }
+
+
+# ---------------------------------------------------------------- datos para el modo simple (registro manual)
+PERU["cuentas_base"].update({"caja": "101", "ventas_servicios": "70411", "tributos_pagar": "40111"})
+COLOMBIA["cuentas_base"].update({"caja": "1105", "ventas_servicios": "4135", "tributos_pagar": "240801"})
+MEXICO["cuentas_base"].update({"caja": "101", "ventas_servicios": "401.01", "tributos_pagar": "213.01",
+                               "iva_debito_cobrado": "208.01", "iva_credito_pendiente": "119.01"})
+_BASE_ESTANDAR.update({"caja": "1101", "ventas_servicios": "4102", "tributos_pagar": "2202"})
+
+# Planilla: cuenta de gasto, aportes del empleador, retenciones al trabajador y neto por pagar.
+PERU["planilla"] = {"gasto": "6211", "gasto_aportes": "6271", "aportes_pagar": "4031", "aporte_pct": 9.0,
+                    "aporte_label": "Aportes del empleador (EsSalud 9%)",
+                    "retenciones": [("Retención ONP (13%)", "4032"), ("Retención AFP", "407"),
+                                    ("Retención de renta de 5ta categoría", "40173")], "neto": "4111"}
+COLOMBIA["planilla"] = {"gasto": "5105", "gasto_aportes": "5105", "aportes_pagar": "2370", "aporte_pct": None,
+                        "aporte_label": "Aportes del empleador (salud, pensión, parafiscales)",
+                        "retenciones": [("Retenciones al trabajador (salud, pensión, retefuente)", "2370")], "neto": "2505"}
+MEXICO["planilla"] = {"gasto": "603.01", "gasto_aportes": "603.26", "aportes_pagar": "211.01", "aporte_pct": None,
+                      "aporte_label": "Cuotas IMSS patronales",
+                      "retenciones": [("ISR retenido por sueldos", "216.01"), ("Cuotas IMSS del trabajador", "216.11")], "neto": "210"}
+_PLANILLA_ESTANDAR = {"gasto": "5201", "gasto_aportes": "5202", "aportes_pagar": "2302", "aporte_pct": None,
+                      "aporte_label": "Aportes del empleador",
+                      "retenciones": [("Aportes sociales del trabajador", "2302"), ("Impuesto retenido al trabajador", "2202")],
+                      "neto": "2301"}
+for _p in (CHILE, ARGENTINA, ECUADOR, BOLIVIA, ESTANDAR):
+    _p["planilla"] = _PLANILLA_ESTANDAR
+
+# Honorarios: cuenta de gasto y retenciones que se pueden marcar. "sobre": "monto" (antes de impuesto) o "impuesto".
+PERU["honorarios"] = {"cuenta": "6321", "retenciones": [
+    {"label": "Retención de renta de 4ta categoría (8%)", "pct": 8.0, "sobre": "monto", "cuenta": "40172", "umbral": 1500}]}
+COLOMBIA["honorarios"] = {"cuenta": "5110", "retenciones": []}
+MEXICO["honorarios"] = {"cuenta": "603", "retenciones": [
+    {"label": "ISR retenido (10%)", "pct": 10.0, "sobre": "monto", "cuenta": "216"},
+    {"label": "IVA retenido (2/3 del IVA)", "pct": 66.6667, "sobre": "impuesto", "cuenta": "216.10"}]}
+CHILE["honorarios"] = {"cuenta": "5301", "retenciones": [
+    {"label": "Retención boleta de honorarios (15,25% en 2026)", "pct": 15.25, "sobre": "monto", "cuenta": "2202"}]}
+for _p in (ARGENTINA, ECUADOR, BOLIVIA, ESTANDAR):
+    _p["honorarios"] = {"cuenta": "5301", "retenciones": []}
+
+BOLIVIA["impuesto_sobre_total"] = True   # el IVA es el 13% del importe total facturado
 
 PAISES = {p["codigo"]: p for p in (ESTANDAR, PERU, COLOMBIA, MEXICO, CHILE, ARGENTINA, ECUADOR, BOLIVIA)}
 PROXIMAMENTE = []

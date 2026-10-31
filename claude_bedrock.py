@@ -12,6 +12,7 @@ import boto3
 from botocore.config import Config
 
 import contabilidad
+import paises as _paises
 
 REGION = os.environ.get("AWS_REGION", "us-east-1")
 MODEL_ID = os.environ.get("BEDROCK_MODEL_ID", "us.anthropic.claude-haiku-5-5")
@@ -66,13 +67,14 @@ def _prompt_sistema(empresa, pais):
     notas = (empresa.get("notas_ia") or "").strip()
     bloque_notas = (f"\nINSTRUCCIONES PERMANENTES DEL USUARIO (tienen prioridad sobre las reglas generales; el asiento debe cuadrar siempre)\n{notas}\n"
                     if notas else "")
+    guia = _paises.guia_actividad(pais, empresa.get("actividad", ""))
     return f"""Eres un contador público experto en {pais.get('contexto', pais['nombre'])}. Lees comprobantes y propones el asiento contable.
 
 EMPRESA QUE USA EL SISTEMA
 - Razón social: {empresa['nombre']}
 - {pais['id_fiscal']}: {empresa['id_fiscal']}
 - Régimen: {empresa['regimen']}
-- Actividad: {empresa['actividad']}
+- Giro del negocio: {empresa['actividad']}
 - Moneda funcional: {empresa['moneda']}
 
 CÓMO CLASIFICAR
@@ -82,6 +84,8 @@ CÓMO CLASIFICAR
 - Vouchers bancarios, cobranzas, pagos, aportes u otros movimientos: "otro".
 
 {bloque_notas}
+{guia}
+
 CLASIFICACIÓN DE COMPRAS (muy importante)
 - MERCADERÍA: bienes que la empresa compra para revender sin transformarlos. Va a la cuenta de compras de mercadería.
 - GASTO: bienes de consumo y servicios de la operación (gas, limpieza, útiles, luz, alquiler, honorarios, etc.). Va a una cuenta de gasto.
@@ -216,18 +220,22 @@ def _agregar_asiento(doc, pais, pares, alerta=None):
 
 
 def agregar_destino(doc, pais):
-    """Perú: a una compra de mercadería le agrega el asiento de destino: Debe 20 / Haber 61.
-    Si la compra ya va directo a la 20, no agrega nada. Una nota de crédito revierte el destino."""
+    """Perú: a una compra de mercadería, materia prima o envases le agrega el asiento de destino a existencias
+    (Debe 20/24/26 / Haber 61). Si la compra ya va directo a existencias, no agrega nada. Una nota de crédito lo revierte."""
     cfg = pais.get("destino_compra")
     if not cfg or doc["tipo"] != "compra":
         return doc
-    monto = round(sum(l["debe"] - l["haber"] for l in doc["asiento"]
-                      if any(str(l["cuenta"]).startswith(p) for p in cfg["cuentas_compra"])), 2)
-    if abs(monto) < 0.01:
-        return doc
-    inv, var, a = cfg["inventario"], cfg["variacion"], abs(monto)
-    pares = [(inv, a, 0), (var, 0, a)] if monto > 0 else [(var, a, 0), (inv, 0, a)]
-    _agregar_asiento(doc, pais, pares, "Se agregó el asiento de destino de la compra (Debe 20 Mercaderías / Haber 61 Variación de existencias).")
+    pares, usadas = [], []
+    for m in cfg["mapa"]:
+        monto = round(sum(l["debe"] - l["haber"] for l in doc["asiento"] if int(l.get("grupo", 1) or 1) == 1
+                          and any(str(l["cuenta"]).startswith(p) for p in m["compra"])), 2)
+        if abs(monto) < 0.01:
+            continue
+        a = abs(monto)
+        pares += [(m["inventario"], a, 0), (m["variacion"], 0, a)] if monto > 0 else [(m["variacion"], a, 0), (m["inventario"], 0, a)]
+        usadas.append(f"{m['inventario']} / {m['variacion']}")
+    if pares:
+        _agregar_asiento(doc, pais, pares, f"Se agregó el asiento de destino de la compra a existencias (Debe / Haber: {', '.join(usadas)}).")
     return doc
 
 
@@ -288,8 +296,10 @@ def opciones_naturaleza(pais):
     g, cc = pais["grupos"], contabilidad.coincide
     gasto = [c for c, _ in pais["plan"] if any(cc(c, g[k]) for k in ("servicios", "otros_gastos", "tributos"))]
     activo = [c for c, n in pais["plan"] if cc(c, g["fijo"]) and "depreciación" not in n.lower()]
-    return {"Mercadería para reventa": [pais["cuentas_base"]["compras"]],
-            "Gasto (consumo u operación)": gasto, "Activo fijo": activo}
+    opciones = {"Mercadería para reventa": [pais["cuentas_base"]["compras"]]}
+    opciones.update(pais.get("naturalezas_extra", {}))
+    opciones.update({"Gasto (consumo u operación)": gasto, "Activo fijo": activo})
+    return opciones
 
 
 def naturaleza_actual(asiento, pais):

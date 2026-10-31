@@ -34,6 +34,7 @@ empresas = Table(
     Column("regimen", String(100)), Column("moneda", String(8)), Column("actividad", String(60)),
     Column("pct_renta", Float, default=0), Column("creado", DateTime, default=datetime.utcnow),
     Column("notas_ia", Text),                           # instrucciones permanentes para la IA
+    Column("modo", String(10)),                         # lector | simple
 )
 
 documentos = Table(
@@ -69,9 +70,11 @@ def engine():
         meta.create_all(_engine)
         # Migración: bases creadas antes de agregar la columna notas_ia (no pierde datos)
         from sqlalchemy import inspect, text
-        if "notas_ia" not in {c["name"] for c in inspect(_engine).get_columns("empresas")}:
-            with _engine.begin() as c:
-                c.execute(text("ALTER TABLE empresas ADD COLUMN notas_ia TEXT"))
+        existentes = {c["name"] for c in inspect(_engine).get_columns("empresas")}
+        for nombre_col, tipo_col in (("notas_ia", "TEXT"), ("modo", "VARCHAR(10)")):
+            if nombre_col not in existentes:
+                with _engine.begin() as c:
+                    c.execute(text(f"ALTER TABLE empresas ADD COLUMN {nombre_col} {tipo_col}"))
     return _engine
 
 
