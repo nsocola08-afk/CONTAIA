@@ -35,8 +35,12 @@ Todo se hace desde el navegador: GitHub (guarda el código), Railway (lo ejecuta
 Cambia un archivo en GitHub (botón de lápiz → Commit) y Railway vuelve a publicar solo.
 Los datos no se pierden porque viven en PostgreSQL.
 
+## Países incluidos
+Estándar (sin país), Perú, Colombia, México, Chile, Argentina, Ecuador y Bolivia. Cada uno tiene su plan de cuentas, su impuesto y sus reglas en `paises.py`.
+Chile, Argentina, Ecuador y Bolivia usan un plan estándar porque no tienen un plan único obligatorio para todas las empresas.
+
 ## Cómo agregar otro país
-Abre `paises.py`, copia el bloque `PERU`, cambia plan de cuentas, tasas y reglas, y regístralo en `PAISES`.
+Abre `paises.py`, copia un bloque, cambia plan de cuentas, tasas y reglas, y regístralo en `PAISES`.
 Antes de habilitar un país verifica sus tasas y retenciones vigentes con un contador local.
 
 ## Notas

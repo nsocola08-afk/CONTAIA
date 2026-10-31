@@ -16,11 +16,16 @@ def lineas(docs):
     return pd.DataFrame(filas, columns=cols)
 
 
+def coincide(cuenta, tokens):
+    """Un token "70" acepta cuentas que empiezan con 70; "=603" acepta solo la cuenta 603."""
+    return any(cuenta == t[1:] if t.startswith("=") else cuenta.startswith(t) for t in tokens)
+
+
 def saldo(df, prefijos):
-    """Debe - Haber de las cuentas que empiezan con alguno de los prefijos."""
-    if df.empty:
+    """Debe - Haber de las cuentas que cumplen alguno de los tokens."""
+    if df.empty or not prefijos:
         return 0.0
-    m = df["cuenta"].str.startswith(tuple(prefijos))
+    m = df["cuenta"].map(lambda c: coincide(c, prefijos))
     return float(df.loc[m, "debe"].sum() - df.loc[m, "haber"].sum())
 
 
@@ -54,7 +59,7 @@ def situacion_financiera(df, g, hasta=None):
          "Inmuebles, maquinaria y equipo (neto)": saldo(df, g["fijo"])}
     P = {"Tributos por pagar": max(0.0, -imp), "Remuneraciones por pagar": -saldo(df, g["remuneraciones"]),
          "Cuentas por pagar": -saldo(df, g["cxp"])}
-    resultado = -(saldo(df, ["6"]) + saldo(df, ["7"]))
+    resultado = -saldo(df, g["resultado"])
     Pt = {"Capital y reservas": -saldo(df, g["capital"]), "Resultados acumulados": -saldo(df, g["acumulados"]),
           "Resultado del ejercicio": resultado}
     ta, tp, tpt = sum(A.values()), sum(P.values()), sum(Pt.values())
@@ -71,28 +76,32 @@ def balance_comprobacion(df):
     return t
 
 
-def impuestos_por_mes(docs, pais, pct_renta):
-    """Liquidación mensual del impuesto al consumo (IGV/IVA) y pago a cuenta de renta."""
+def impuestos_por_mes(docs, pais, pct):
+    """Liquidación mensual del impuesto al consumo (IGV/IVA) y pago a cuenta, según la ficha del país."""
+    cols_nom = pais["columnas_nomina"]
+    etiqueta_pct = f"{pais['pago_cuenta_label']} ({pct:g}%)"
     filas = {}
     for d in docs:
         if d["estado"] != "registrado":
             continue
         m = d["fecha"][:7]
         f = filas.setdefault(m, {"Periodo": m, "Ventas gravadas": 0.0, "Impuesto débito": 0.0, "Impuesto crédito": 0.0,
-                                  "EsSalud": 0.0, "ONP/AFP": 0.0})
+                                  **{n: 0.0 for n, _ in cols_nom}})
         if d["tipo"] == "venta":
             f["Ventas gravadas"] += d["base"]; f["Impuesto débito"] += d["impuesto"]
         elif d["tipo"] == "compra":
             f["Impuesto crédito"] += d["impuesto"]
         for l in d["asiento"]:
             c = str(l["cuenta"])
-            if c.startswith("4031"): f["EsSalud"] += float(l["haber"] or 0)
-            if c.startswith(("4032", "407")): f["ONP/AFP"] += float(l["haber"] or 0)
+            for n, toks in cols_nom:
+                if coincide(c, toks):
+                    f[n] += float(l["haber"] or 0)
     out = []
     for m in sorted(filas):
         f = filas[m]
         f[f"{pais['impuesto']} a pagar (+) / a favor (−)"] = f["Impuesto débito"] - f["Impuesto crédito"]
-        f[f"Renta pago a cuenta ({pct_renta:g}%)"] = f["Ventas gravadas"] * pct_renta / 100
+        if pct:
+            f[etiqueta_pct] = f["Ventas gravadas"] * pct / 100
         out.append({k: round(v, 2) if isinstance(v, float) else v for k, v in f.items()})
     return pd.DataFrame(out)
 

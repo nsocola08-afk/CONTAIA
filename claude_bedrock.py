@@ -61,14 +61,14 @@ def _texto(resp):
 
 def _prompt_sistema(empresa, pais):
     plan = "\n".join(f"{c} | {n}" for c, n in pais["plan"])
-    return f"""Eres un contador público experto en {pais['nombre']}. Lees comprobantes y propones el asiento contable.
+    return f"""Eres un contador público experto en {pais.get('contexto', pais['nombre'])}. Lees comprobantes y propones el asiento contable.
 
 EMPRESA QUE USA EL SISTEMA
 - Razón social: {empresa['nombre']}
 - {pais['id_fiscal']}: {empresa['id_fiscal']}
 - Régimen: {empresa['regimen']}
 - Actividad: {empresa['actividad']}
-- Moneda funcional: {pais['moneda']}
+- Moneda funcional: {empresa['moneda']}
 
 CÓMO CLASIFICAR
 - Si el emisor del comprobante es la empresa (su {pais['id_fiscal']} coincide), es una VENTA.
@@ -97,7 +97,7 @@ Responde ÚNICAMENTE con un objeto JSON, sin texto antes ni después ni bloques 
   "asiento": [{{"cuenta": "codigo", "nombre": "denominación", "debe": 0, "haber": 0}}],
   "alertas": ["avisos para el contador, si los hay"]
 }}
-Todos los importes (base_imponible, impuesto, no_gravado, total y el asiento) deben estar en la moneda funcional ({pais['moneda']}),
+Todos los importes (base_imponible, impuesto, no_gravado, total y el asiento) deben estar en la moneda funcional ({empresa['moneda']}),
 ya convertidos. Usa números con punto decimal y 2 decimales. El asiento debe cuadrar: suma del Debe igual a la suma del Haber.
 Si un dato no se lee o no existe, usa cadena vacía o 0 y explícalo en "alertas". Nunca inventes datos."""
 
@@ -135,9 +135,10 @@ def normalizar(j, empresa, pais):
     """Convierte la respuesta de Claude al formato interno y la valida."""
     alertas = [str(a) for a in (j.get("alertas") or [])]
     plan = dict(pais["plan"])
-    mi_id = re.sub(r"\D", "", empresa["id_fiscal"] or "")
+    limpiar = lambda x: re.sub(r"[^0-9A-Z]", "", str(x or "").upper())  # noqa: E731
+    mi_id = limpiar(empresa["id_fiscal"])
 
-    emi, rec = re.sub(r"\D", "", str(j.get("emisor_id") or "")), re.sub(r"\D", "", str(j.get("receptor_id") or ""))
+    emi, rec = limpiar(j.get("emisor_id")), limpiar(j.get("receptor_id"))
     tipo = j.get("tipo") if j.get("tipo") in ("compra", "venta", "planilla", "honorarios", "otro") else "otro"
     # La app manda: si el ID fiscal de la empresa aparece, eso decide compra/venta.
     if tipo in ("compra", "venta") and mi_id:
@@ -157,9 +158,13 @@ def normalizar(j, empresa, pais):
     asiento = []
     for l in j.get("asiento") or []:
         cta = str(l.get("cuenta", "")).strip()
+        nombre_ia = str(l.get("nombre", "")).strip()
         if cta not in plan:
-            alertas.append(f"La cuenta {cta} no está en el plan de cuentas. Corrígela antes de registrar.")
-        asiento.append({"cuenta": cta, "nombre": plan.get(cta) or str(l.get("nombre", "")),
+            if pais.get("cuentas_libres") and re.fullmatch(r"[1-5]\d{3,}", cta) and nombre_ia:
+                alertas.append(f"Cuenta nueva propuesta: {cta} {nombre_ia}. Confírmala antes de registrar.")
+            else:
+                alertas.append(f"La cuenta {cta} no está en el plan de cuentas. Corrígela antes de registrar.")
+        asiento.append({"cuenta": cta, "nombre": plan.get(cta) or nombre_ia,
                         "debe": _num(l.get("debe")), "haber": _num(l.get("haber"))})
 
     fecha = str(j.get("fecha") or "")
@@ -171,7 +176,7 @@ def normalizar(j, empresa, pais):
         "tipo": tipo, "tipo_comprobante": str(j.get("tipo_comprobante") or ""),
         "serie": str(j.get("serie") or ""), "numero": str(j.get("numero") or ""), "fecha": fecha,
         "contraparte_id": str(c_id), "contraparte_nombre": str(c_nom),
-        "moneda": str(j.get("moneda_original") or pais["moneda"]), "tipo_cambio": _num(j.get("tipo_cambio")),
+        "moneda": str(j.get("moneda_original") or empresa["moneda"]), "tipo_cambio": _num(j.get("tipo_cambio")),
         "base": _num(j.get("base_imponible")), "impuesto": _num(j.get("impuesto")),
         "no_gravado": _num(j.get("no_gravado")), "total": _num(j.get("total")),
         "glosa": str(j.get("glosa") or ""), "asiento": asiento, "alertas": alertas,

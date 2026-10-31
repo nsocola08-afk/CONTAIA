@@ -79,6 +79,11 @@ def identificar():
     return owner
 
 
+def SIM(emp, p):
+    """Símbolo de moneda: en el modo estándar se muestra el código elegido (USD, EUR…)."""
+    return emp["moneda"] if p.get("monedas") else p["simbolo"]
+
+
 def money(x, simbolo=""):
     x = round(float(x or 0), 2) + 0.0
     return f"{simbolo} {x:,.2f}".strip()
@@ -95,33 +100,45 @@ def enlace_recuperacion(owner):
 
 
 # ------------------------------------------------------------------ bienvenida (primera vez)
+def normalizar_id(texto):
+    return re.sub(r"[^0-9A-Z]", "", (texto or "").upper())
+
+
 def bienvenida(owner):
     st.title("📒 Bienvenido a ContaIA")
     st.write("Antes de empezar, cuéntanos sobre tu empresa. Con estos datos Claude usará el plan contable y los impuestos de tu país.")
-    disp = {p["nombre"]: c for c, p in paises.PAISES.items()}
+    disp = {p["nombre"]: c for c, p in sorted(paises.PAISES.items(), key=lambda x: (x[0] != "ST", x[1]["nombre"]))}
     pais_nombre = st.selectbox("País", list(disp), help="Cada país usa su propio plan de cuentas e impuestos.")
-    st.caption("Próximamente: " + ", ".join(paises.PROXIMAMENTE))
+    if paises.PROXIMAMENTE:
+        st.caption("Próximamente: " + ", ".join(paises.PROXIMAMENTE))
     p = paises.get_pais(disp[pais_nombre])
     with st.form("alta"):
         nombre = st.text_input("Nombre o razón social de la empresa")
-        idf = st.text_input(f"{p['id_fiscal']} (número de identificación tributaria)", max_chars=20)
+        idf = st.text_input(f"{p['id_fiscal']} (número de identificación tributaria)", max_chars=20,
+                            placeholder=f"Ej.: {p['id_ejemplo']}")
         regimen = st.selectbox("Régimen tributario", list(p["regimenes"]))
         actividad = st.selectbox("Actividad principal", p["actividades"])
         c1, c2 = st.columns(2)
-        c1.text_input("Moneda principal", value=f"{p['moneda']} ({p['simbolo']})", disabled=True)
+        if p.get("monedas"):
+            moneda = c1.selectbox("Moneda principal", p["monedas"], index=p["monedas"].index(p["moneda"]))
+        else:
+            moneda = p["moneda"]
+            c1.text_input("Moneda principal", value=f"{p['moneda']} ({p['simbolo']})", disabled=True)
         c2.text_input("Inicio del ejercicio", value=p["inicio_ejercicio"], disabled=True)
-        st.info(f"Plan de cuentas: {p['plan_nombre']}. El país no se puede cambiar después.")
+        tasa = f"{p['tasa_impuesto']:.0%} (tarifa general)" if p["tasa_impuesto"] else "según cada comprobante"
+        st.info(f"Plan de cuentas: {p['plan_nombre']}. {p['impuesto']}: {tasa}. El país no se puede cambiar después.")
+        st.caption(p["aviso"])
         ok = st.form_submit_button("Comenzar", type="primary")
     if ok:
-        digitos = re.sub(r"\D", "", idf)
+        idn = normalizar_id(idf)
         if not nombre.strip():
             st.error("Escribe el nombre de la empresa.")
-        elif p["id_fiscal_largo"] and len(digitos) != p["id_fiscal_largo"]:
-            st.error(f"El {p['id_fiscal']} debe tener {p['id_fiscal_largo']} dígitos.")
+        elif not re.fullmatch(p["id_regex"], idn):
+            st.error(f"El {p['id_fiscal']} no tiene un formato válido para {p['nombre']}. Ejemplo: {p['id_ejemplo']}.")
         else:
-            db.guardar_empresa(owner, dict(nombre=nombre.strip(), pais=p["codigo"], id_fiscal=digitos or idf.strip(),
-                                           regimen=regimen, moneda=p["moneda"], actividad=actividad,
-                                           pct_renta=p["regimenes"][regimen]))
+            db.guardar_empresa(owner, dict(nombre=nombre.strip(), pais=p["codigo"], id_fiscal=idn,
+                                           regimen=regimen, moneda=moneda, actividad=actividad,
+                                           pct_renta=p["regimenes"][regimen] or 0))
             st.rerun()
 
 
@@ -183,7 +200,7 @@ def pg_dashboard(owner, emp, p, docs):
     g = p["grupos"]
     er, A, P, imp = cont.kpis(docs_p, df, g, p)
     _, _, _, ta, tp, tpt = cont.situacion_financiera(df_all, g, per)
-    s = p["simbolo"]
+    s = SIM(emp, p)
     c = st.columns(4)
     c[0].metric("Ventas netas", money(er["ventas_netas"], s))
     c[1].metric("Compras y costo", money(er["costo"], s))
@@ -254,7 +271,7 @@ def pg_subir(owner, emp, p, docs):
 def revisar(owner, emp, p, d):
     plan = dict(p["plan"])
     ok_cuadre, td, th = ia.validar_asiento(d["asiento"])
-    etiqueta = f"{d['archivo_nombre']} — {d['tipo']} · {d['tipo_comprobante']} {d['serie']}-{d['numero']} · {money(d['total'], p['simbolo'])}"
+    etiqueta = f"{d['archivo_nombre']} — {d['tipo']} · {d['tipo_comprobante']} {d['serie']}-{d['numero']} · {money(d['total'], SIM(emp, p))}"
     with st.expander(("✅ " if ok_cuadre and not d["alertas"] else "⚠️ ") + etiqueta, expanded=True):
         for a in d["alertas"]:
             st.warning(a)
@@ -266,18 +283,24 @@ def revisar(owner, emp, p, d):
         st.caption(f"{d['contraparte_nombre']} ({d['contraparte_id']}) · Base {money(d['base'])} · "
                    f"{p['impuesto']} {money(d['impuesto'])} · Total {money(d['total'])}")
         base = pd.DataFrame(d["asiento"] or [{"cuenta": "", "nombre": "", "debe": 0.0, "haber": 0.0}])[["cuenta", "nombre", "debe", "haber"]]
+        libres = bool(p.get("cuentas_libres"))
         ed = st.data_editor(base, num_rows="dynamic", width="stretch", hide_index=True, key=f"ed_{d['id']}",
-                            column_config={"cuenta": st.column_config.SelectboxColumn("Cuenta", options=list(plan), required=True),
-                                           "nombre": st.column_config.TextColumn("Denominación", disabled=True),
+                            column_config={"cuenta": (st.column_config.TextColumn("Cuenta (código)", required=True) if libres
+                                                      else st.column_config.SelectboxColumn("Cuenta", options=list(plan), required=True)),
+                                           "nombre": st.column_config.TextColumn("Denominación", disabled=not libres),
                                            "debe": st.column_config.NumberColumn("Debe", format="%.2f", default=0.0),
                                            "haber": st.column_config.NumberColumn("Haber", format="%.2f", default=0.0)})
-        lineas = [{"cuenta": str(r["cuenta"]), "nombre": plan.get(str(r["cuenta"]), ""), "debe": float(r["debe"] or 0),
-                   "haber": float(r["haber"] or 0)} for _, r in ed.iterrows() if str(r["cuenta"]).strip()]
+        lineas = [{"cuenta": str(r["cuenta"]).strip(), "nombre": plan.get(str(r["cuenta"]).strip()) or str(r["nombre"] or "").strip(),
+                   "debe": float(r["debe"] or 0), "haber": float(r["haber"] or 0)} for _, r in ed.iterrows() if str(r["cuenta"]).strip()]
+        invalidas = [l["cuenta"] for l in lineas if l["cuenta"] not in plan and not (
+            libres and re.fullmatch(r"[1-5]\d{3,}", l["cuenta"]) and l["nombre"])]
+        if invalidas:
+            st.error("Cuenta inválida: " + ", ".join(invalidas) + (". Usa un código de 4 dígitos (1 a 5) y escribe su nombre." if libres else ". Elige una del plan."))
         cuadra, td, th = ia.validar_asiento(lineas)
         (st.success if cuadra else st.error)(f"Debe {money(td)}  |  Haber {money(th)}" + ("" if cuadra else "  — el asiento no cuadra"))
         b1, b2, b3, b4 = st.columns(4)
         fecha_ok = bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", fecha))
-        if b1.button("✔ Registrar", key=f"r_{d['id']}", type="primary", disabled=not (cuadra and fecha_ok)):
+        if b1.button("✔ Registrar", key=f"r_{d['id']}", type="primary", disabled=not (cuadra and fecha_ok and not invalidas)):
             if db.duplicado(owner, {**d, "tipo": tipo}) and not st.session_state.get(f"dup_{d['id']}"):
                 st.session_state[f"dup_{d['id']}"] = True
                 st.warning("Este comprobante ya está registrado. Pulsa Registrar otra vez si quieres duplicarlo.")
@@ -316,13 +339,15 @@ def pg_registro(titulo, tipo, docs):
 
 def pg_planillas(owner, emp, p, docs):
     st.header("Planillas y honorarios")
+    nom = p["nomina"]
     f = []
     for d in docs:
         if d["estado"] == "registrado" and d["tipo"] in ("planilla", "honorarios"):
-            s = lambda pre, k: sum(l[k] for l in d["asiento"] if str(l["cuenta"]).startswith(pre))  # noqa: E731
-            f.append({"Fecha": d["fecha"], "Tipo": d["tipo"], "Detalle": d["glosa"], "Gasto de personal/servicio": s("62", "debe") + s("6321", "debe"),
-                      "EsSalud": s("4031", "haber"), "ONP/AFP": s("4032", "haber") + s("407", "haber"),
-                      "Retención 4ta": s("40172", "haber"), "Neto a pagar": s("4111", "haber") + s("4212", "haber")})
+            suma = lambda toks, k: sum(l[k] for l in d["asiento"] if cont.coincide(str(l["cuenta"]), toks))  # noqa: E731
+            f.append({"Fecha": d["fecha"], "Tipo": d["tipo"], "Detalle": d["glosa"],
+                      "Gasto de personal / honorarios": suma(nom["gasto"], "debe"),
+                      "Aportes y retenciones": suma(nom["aportes"], "haber"),
+                      "Neto a pagar": suma(nom["neto"], "haber")})
     if not f:
         return st.info("Sin planillas ni honorarios registrados.")
     tabla(pd.DataFrame(f))
@@ -379,7 +404,7 @@ def pg_documentos(owner, emp, p, docs):
     for d in reg:
         c = st.columns([1.2, 1, 2, 3, 1.2, 1, 1])
         c[0].write(d["fecha"]); c[1].write(d["tipo"]); c[2].write(f"{d['serie']}-{d['numero']}")
-        c[3].write(d["contraparte_nombre"]); c[4].write(money(d["total"], p["simbolo"]))
+        c[3].write(d["contraparte_nombre"]); c[4].write(money(d["total"], SIM(emp, p)))
         arch = db.obtener_archivo(owner, d["id"])
         if arch:
             c[5].download_button("⬇", arch[1], file_name=d["archivo_nombre"], mime=arch[0] or None, key=f"dl_{d['id']}")
@@ -394,12 +419,18 @@ def pg_config(owner, emp, p, docs):
         idf = st.text_input(p["id_fiscal"], emp["id_fiscal"])
         regs = list(p["regimenes"])
         regimen = st.selectbox("Régimen tributario", regs, index=regs.index(emp["regimen"]) if emp["regimen"] in regs else 0)
-        pct = st.number_input("% de pago a cuenta de renta", value=float(emp["pct_renta"] or 0), step=0.1)
+        con_pct = any(v is not None for v in p["regimenes"].values())
+        pct = (st.number_input(f"% {p['pago_cuenta_label']} (sobre ventas)", value=float(emp["pct_renta"] or 0), step=0.1)
+               if con_pct else 0.0)
         act = st.selectbox("Actividad", p["actividades"], index=p["actividades"].index(emp["actividad"]) if emp["actividad"] in p["actividades"] else 0)
         st.caption(f"País: {p['nombre']} (fijo) · Moneda: {p['moneda']}")
         if st.form_submit_button("Guardar", type="primary"):
-            db.guardar_empresa(owner, dict(nombre=nombre.strip(), id_fiscal=idf.strip(), regimen=regimen, pct_renta=pct, actividad=act))
-            st.success("Guardado"); st.rerun()
+            idn = normalizar_id(idf)
+            if not re.fullmatch(p["id_regex"], idn):
+                st.error(f"El {p['id_fiscal']} no tiene un formato válido. Ejemplo: {p['id_ejemplo']}.")
+            else:
+                db.guardar_empresa(owner, dict(nombre=nombre.strip(), id_fiscal=idn, regimen=regimen, pct_renta=pct, actividad=act))
+                st.success("Guardado"); st.rerun()
     st.subheader("Conexión con Claude (AWS)")
     st.caption(f"Modelo: `{ia.MODEL_ID}` · Región: `{ia.REGION}`")
     if st.button("Probar conexión con AWS"):
