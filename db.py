@@ -163,6 +163,21 @@ def duplicado(owner, doc):
         return c.execute(q).first() is not None
 
 
+def estadisticas_archivos(owner):
+    """(cantidad, MB) de archivos originales guardados por versiones anteriores."""
+    from sqlalchemy import func
+    with engine().connect() as c:
+        n, total = c.execute(select(func.count(archivos.c.doc_id), func.coalesce(func.sum(func.length(archivos.c.contenido)), 0))
+                             .where(archivos.c.owner_id == owner)).one()
+    return int(n), float(total) / 1048576
+
+
+def borrar_archivos(owner):
+    """Borra solo los archivos originales; los documentos y asientos se conservan."""
+    with engine().begin() as c:
+        c.execute(delete(archivos).where(archivos.c.owner_id == owner))
+
+
 def borrar_empresa(owner):
     """Empezar de nuevo: borra documentos, archivos y los datos de la empresa de esta persona."""
     with engine().begin() as c:

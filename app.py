@@ -10,6 +10,7 @@ import streamlit as st
 from streamlit_cookies_controller import CookieController
 
 import claude_bedrock as ia
+import analisis as an
 import contabilidad as cont
 import db
 import operaciones as ops
@@ -19,7 +20,7 @@ st.set_page_config(page_title="ContaIA", page_icon="📒", layout="wide")
 COOKIE = "contaia_id"
 ESTILO = """
 <style>
-.block-container{padding-top:2rem}
+.block-container{padding-top:3.4rem}
 [data-testid=stMetricValue]{font-size:1.5rem}
 /* Botones: bloques sólidos y rectangulares */
 .stButton>button, .stDownloadButton>button, .stFormSubmitButton>button, [data-testid="stFileUploaderDropzone"] button{
@@ -57,6 +58,14 @@ button[data-testid="stBaseButton-primary"]:hover, button[data-testid="stBaseButt
 [data-testid="stButtonGroup"] button:hover{background:#c9d4e4 !important;}
 [data-testid="stButtonGroup"] button[aria-checked="true"], [data-testid="stButtonGroup"] button[aria-pressed="true"],
 [data-testid="stButtonGroup"] button[kind="segmented_controlActive"]{background:#1f3a5f !important; color:#fff !important;}
+/* Navegación lateral: botones alineados a la izquierda y submenú */
+[data-testid="stSidebar"] .stButton>button{justify-content:flex-start; text-align:left}
+[data-testid="stSidebar"] .stButton button div, [data-testid="stSidebar"] .stButton button p{justify-content:flex-start; text-align:left !important; width:100%}
+[data-testid="stSidebar"] [data-testid="stVerticalBlock"]{gap:.4rem}
+[data-testid="stSidebar"] [class*="st-key-sub_"] button{background:#eef2f8 !important; font-size:.85rem; min-height:2.2rem;
+  padding:.35rem .9rem .35rem 1.9rem !important}
+[data-testid="stSidebar"] [class*="st-key-sub_"] button:hover{background:#dde4ee !important}
+[data-testid="stSidebar"] [class*="__activo"] button{background:#4a6fa5 !important; color:#fff !important}
 /* La barra superior de Streamlit conserva su estilo */
 [data-testid="stHeader"] button, [data-testid="stToolbar"] button{
   background:transparent !important; min-height:0; padding:.25rem .5rem !important;}
@@ -323,6 +332,7 @@ def pg_dashboard(owner, emp, p, docs):
 def pg_subir(owner, emp, p, docs):
     st.header("Subir documentos")
     st.write("Facturas, boletas, recibos por honorarios, planillas o vouchers (PDF, PNG, JPG). Máx. 4.5 MB por archivo.")
+    st.caption("El archivo no se guarda en la app: solo se conserva la información del asiento. Guarda tú el comprobante original.")
     OPC_NAT = {"Que la IA decida": "", "Mercadería para reventa": "Si es una compra, es MERCADERÍA PARA REVENTA (cuenta de compras de mercadería).",
                "Gasto (consumo u operación)": "Si es una compra, es un GASTO de consumo u operación (NO mercadería): usa una cuenta de gasto adecuada al concepto.",
                "Activo fijo": "Si es una compra, es un ACTIVO FIJO (inmuebles, maquinaria y equipo)."}
@@ -344,7 +354,7 @@ def pg_subir(owner, emp, p, docs):
                 try:
                     datos = f.getvalue()
                     doc = ia.extraer(f.name, f.type or "", datos, emp, p, pista)
-                    db.crear_documento(owner, doc, f.name, f.type or "", datos)
+                    db.crear_documento(owner, doc, f.name, "", None)   # el archivo no se guarda: solo la información
                 except Exception as e:  # noqa: BLE001
                     errores.append(f"{f.name}: {e}")
             barra.progress((i + 1) / len(archivos))
@@ -390,7 +400,11 @@ def pg_registrar(owner, emp, p, docs):
             d["nombre"] = t2.text_input(f"Razón social o nombre del {tercero.lower()}", key=K("nom"))
         elif tipo_op in ("Cobranza a cliente", "Pago a proveedor o deuda", "Aporte de capital"):
             d["documento"] = c2.text_input("N° de operación o voucher", key=K("doc"))
-            d["nombre"] = c3.text_input("Cliente, proveedor o socio (opcional)", key=K("nom"))
+            quien = {"Cobranza a cliente": "cliente", "Pago a proveedor o deuda": "proveedor", "Aporte de capital": "socio"}[tipo_op]
+            t1, t2 = st.columns([1, 2])
+            d["id"] = t1.text_input(f"{p['id_fiscal']} del {quien} (recomendado)", key=K("id"), placeholder=p["id_ejemplo"])
+            d["nombre"] = t2.text_input(f"Nombre del {quien} (recomendado)", key=K("nom"),
+                                        help="Con el nombre o el ID, la operación aparece en el Análisis de cuenta de ese tercero.")
 
         if es_doc:
             etiquetas = {"incluido": f"El monto ya incluye {imp_n}", "agregar": f"Sumar {imp_n} al monto",
@@ -588,7 +602,7 @@ def revisar(owner, emp, p, d):
         if len({l["grupo"] for l in lineas}) > 1:
             st.caption("Esta operación genera varios asientos; cada uno debe cuadrar por separado. "
                        "Las líneas con el mismo «Asiento N°» forman un asiento.")
-        b1, b2, b3, b4 = st.columns(4)
+        b1, b2, b3, _ = st.columns(4)
         fecha_ok = bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", fecha))
         if b1.button("✔ Registrar", key=f"r_{d['id']}", type="primary", disabled=not (cuadra and fecha_ok and not invalidas)):
             if db.duplicado(owner, {**d, "tipo": tipo}) and not st.session_state.get(f"dup_{d['id']}"):
@@ -603,9 +617,6 @@ def revisar(owner, emp, p, d):
         if b3.button("Descartar", key=f"x_{d['id']}"):
             db.eliminar_documento(owner, d["id"])
             st.rerun()
-        arch = db.obtener_archivo(owner, d["id"])
-        if arch:
-            b4.download_button("Ver original", arch[1], file_name=d["archivo_nombre"], mime=arch[0] or None, key=f"v_{d['id']}")
 
 
 def pg_diario(owner, emp, p, docs):
@@ -700,13 +711,10 @@ def pg_documentos(owner, emp, p, docs):
     if not reg:
         return st.info("Sin documentos.")
     for d in reg:
-        c = st.columns([1.2, 1, 2, 3, 1.2, 1, 1])
+        c = st.columns([1.2, 1, 2, 3, 1.2, 1])
         c[0].write(d["fecha"]); c[1].write(d["tipo"]); c[2].write(f"{d['serie']}-{d['numero']}")
         c[3].write(d["contraparte_nombre"]); c[4].write(money(d["total"], SIM(emp, p)))
-        arch = db.obtener_archivo(owner, d["id"])
-        if arch:
-            c[5].download_button("⬇", arch[1], file_name=d["archivo_nombre"], mime=arch[0] or None, key=f"dl_{d['id']}")
-        if c[6].button("🗑", key=f"del_{d['id']}", help="Eliminar documento y asiento"):
+        if c[5].button("🗑", key=f"del_{d['id']}", help="Eliminar documento y asiento"):
             db.eliminar_documento(owner, d["id"]); st.rerun()
 
 
@@ -771,19 +779,153 @@ def pg_config(owner, emp, p, docs):
     st.write("Tus datos están ligados a **este navegador**. Si borras las cookies, usas modo incógnito o cambias de equipo, "
              "guarda este enlace privado para recuperarlos (no lo compartas: quien lo tenga ve tu contabilidad):")
     st.code(enlace_recuperacion(owner), language=None)
+    n_arch, mb_arch = db.estadisticas_archivos(owner)
+    if n_arch:
+        st.subheader("Liberar espacio")
+        st.write(f"Hay **{n_arch} archivo(s) original(es)** guardado(s) de versiones anteriores ({mb_arch:.1f} MB). "
+                 "La app ya no guarda archivos nuevos. Borrarlos no afecta tus asientos ni tus reportes.")
+        ok_arch = st.checkbox("Entiendo que ya no podré ver esos originales", key="ok_arch")
+        if st.button("Borrar archivos originales", disabled=not ok_arch, key="btn_arch"):
+            db.borrar_archivos(owner)
+            st.session_state.pop("ok_arch", None)
+            st.rerun()
     st.subheader("Empezar nuevamente")
     st.write("Vuelves a la pantalla inicial: eliges el modo de trabajo y registras los datos de una empresa (puedes cambiar de país). "
              "**Se borrarán los datos de la empresa, todos los documentos y los asientos.** Descarga antes tu respaldo.")
     ok_reset = st.checkbox("Entiendo que se borrará todo y no se puede deshacer", key="ok_reset")
     if st.button("Empezar nuevamente", disabled=not ok_reset, key="btn_reset"):
         db.borrar_empresa(owner)
-        for k in ("menu", "eeff_sel", "up_n", "up_err", "ok_reset", "nat_up", "nota_up", "per_dash", "per_eeff", "modo_sel",
+        for k in ("pagina", "an_sel", "an_corte", "eeff_sel", "up_n", "up_err", "ok_reset", "nat_up", "nota_up", "per_dash", "per_eeff", "modo_sel",
                   "reg_n", "reg_tipo", "reg_ok", "cfg_modo", "cfg_act", "cfg_act_otra"):
             st.session_state.pop(k, None)
         st.rerun()
     with st.expander("Zona de peligro"):
         if st.checkbox("Entiendo que se borrarán todos mis documentos y asientos") and st.button("Borrar solo documentos y asientos"):
             db.borrar_todo(owner); st.rerun()
+
+
+def con_total(df, cols, nombre_col):
+    """Agrega una fila TOTAL sumando las columnas indicadas."""
+    if df.empty:
+        return df
+    fila = {c: "" for c in df.columns}
+    fila[nombre_col] = "TOTAL"
+    for c in cols:
+        fila[c] = round(float(df[c].sum()), 2)
+    return pd.concat([df, pd.DataFrame([fila])], ignore_index=True)
+
+
+def grafico_barras(nombres, valores, titulo):
+    fig = go.Figure(go.Bar(x=nombres, y=valores, marker_color="#1f3a5f"))
+    fig.update_layout(title=titulo, height=320, margin=dict(t=50, b=20), bargap=0.6)
+    st.plotly_chart(fig, width="stretch")
+
+
+def pg_analisis(owner, emp, p, docs):
+    st.header("Análisis de cuenta")
+    g, s = p["grupos"], SIM(emp, p)
+    CUENTAS = {
+        "Cuentas por cobrar": dict(tokens=g["cxc"], signo=1, tercero="Cliente", et=("Facturado", "Cobrado / abonos", "Saldo por cobrar")),
+        "Cuentas por pagar": dict(tokens=g["cxp"], signo=-1, tercero="Proveedor", et=("Facturado", "Pagado / abonos", "Saldo por pagar")),
+        "Tributos": dict(tokens=g["impuestos"], signo=-1, cols=("Debe", "Haber"), saldo="Saldo (por pagar +, a favor −)"),
+        "Mercaderías e inventarios": dict(tokens=g["inventarios"], signo=1, cols=("Entradas", "Salidas"), saldo="Valor disponible",
+                                          terceros="Compras por proveedor"),
+        "Efectivo (caja y bancos)": dict(tokens=g["efectivo"], signo=1, cols=("Ingresos", "Egresos"), saldo="Saldo disponible"),
+        "Remuneraciones por pagar": dict(tokens=g["remuneraciones"], signo=-1, cols=("Debe", "Haber"), saldo="Saldo por pagar"),
+        "Activo fijo": dict(tokens=g["fijo"], signo=1, cols=("Adquisiciones", "Bajas y depreciación"), saldo="Valor neto",
+                            terceros="Adquisiciones por proveedor"),
+    }
+    nombres = list(CUENTAS)
+    sel = st.segmented_control("Seleccionar cuenta", nombres, default=nombres[0], key="an_sel") or nombres[0]
+    corte = st.date_input("Corte al", value=date.today(), key="an_corte")
+    cfg = CUENTAS[sel]
+    mov = an.movimientos(docs, cfg["tokens"], hasta=corte.isoformat())
+    st.subheader(sel)
+    if mov.empty:
+        return st.info("Todavía no hay movimientos registrados en esta cuenta hasta la fecha de corte.")
+
+    if "tercero" in cfg:                                           # cuentas por cobrar y por pagar
+        et, tercero, signo = cfg["et"], cfg["tercero"], cfg["signo"]
+        plural = {"Cliente": "Clientes", "Proveedor": "Proveedores"}[tercero]
+        mostrar_cero = st.checkbox(f"Mostrar también {plural.lower()} con saldo en cero", key=f"cero_{sel}")
+        sal = an.saldos_por_tercero(mov, signo, et, solo_con_saldo=not mostrar_cero)
+        total = float(sal[et[2]].sum()) if not sal.empty else 0.0
+        k1, k2, k3 = st.columns(3)
+        k1.metric(f"Total {et[2].lower()}", money(total, s))
+        k2.metric(plural, f"{len(sal)}")
+        if not sal.empty:
+            k3.metric("Mayor saldo", money(float(sal[et[2]].iloc[0]), s), sal["Nombre"].iloc[0], delta_color="off")
+        if (sal["Nombre"] == "(sin identificar)").any():
+            st.warning(f"Hay movimientos sin {tercero.lower()} identificado. Escribe el nombre o el {p['id_fiscal']} al registrar "
+                       "cada operación para que se asignen a la persona correcta.")
+        t1, t2, t3 = st.tabs([f"Saldo por {tercero.lower()}", "Antigüedad de saldos", "Detalle"])
+        with t1:
+            if sal.empty:
+                st.success("No hay saldos pendientes.")
+            else:
+                tabla(con_total(sal, list(et), "Nombre"))
+                top = sal.head(10)
+                grafico_barras(list(top["Nombre"]), list(top[et[2]]), f"Principales saldos – {sel.lower()}")
+        with t2:
+            ant = an.antiguedad(mov, signo, corte)
+            if ant.empty:
+                st.success("No hay saldos pendientes.")
+            else:
+                tabla(con_total(ant, an.TRAMOS + ["Saldo a favor", "Total"], "Nombre"))
+                st.caption("Los cobros o pagos se aplican a las facturas más antiguas. La antigüedad se cuenta desde la fecha de cada "
+                           f"documento hasta el corte ({corte.isoformat()}).")
+        with t3:
+            dfc = an.asignar_terceros(mov)
+            ficha = an.ficha_terceros(dfc)
+            claves = sorted(ficha, key=lambda c: ficha[c][1].upper())
+            elegido = st.selectbox(tercero, claves, format_func=lambda c: f"{ficha[c][1]}  ·  {ficha[c][0]}" if ficha[c][0] else ficha[c][1],
+                                   key=f"det_{sel}")
+            det = dfc[dfc["clave"] == elegido].copy()
+            det["Cargo"] = det["debe"] if signo > 0 else det["haber"]
+            det["Abono"] = det["haber"] if signo > 0 else det["debe"]
+            det["Saldo"] = (det["Cargo"] - det["Abono"]).cumsum()
+            tabla(det.rename(columns={"fecha": "Fecha", "documento": "Documento", "tipo": "Tipo", "glosa": "Detalle"})
+                  [["Fecha", "Documento", "Tipo", "Detalle", "Cargo", "Abono", "Saldo"]].round(2))
+        return
+
+    signo, (c_debe, c_haber) = cfg["signo"], cfg["cols"]           # tributos, existencias, efectivo, remuneraciones, activo fijo
+    resumen = an.resumen_cuentas(mov, signo)
+    saldo_total = float(resumen["Saldo"].sum())
+    k1, k2, k3 = st.columns(3)
+    k1.metric(cfg["saldo"], money(saldo_total, s))
+    k2.metric(c_debe, money(float(mov["debe"].sum()), s))
+    k3.metric(c_haber, money(float(mov["haber"].sum()), s))
+    nombres_tabs = ["Resumen", "Movimientos", "Evolución"] + ([cfg["terceros"]] if "terceros" in cfg else [])
+    tabs = st.tabs(nombres_tabs)
+    with tabs[0]:
+        r = resumen.rename(columns={"Debe": c_debe, "Haber": c_haber, "Saldo": cfg["saldo"]})
+        tabla(con_total(r, [c_debe, c_haber, cfg["saldo"]], "Denominación"))
+        mes = an.por_mes(mov, signo).rename(columns={"Debe": c_debe, "Haber": c_haber})
+        st.markdown("**Por mes**")
+        tabla(mes)
+        if sel == "Mercaderías e inventarios":
+            st.caption("El valor disponible sale de los asientos de destino a existencias. La app no registra unidades, almacenes ni productos.")
+    with tabs[1]:
+        cuentas = ["Todas"] + sorted(mov["cuenta"].unique())
+        cta = st.selectbox("Cuenta", cuentas, key=f"cta_{sel}")
+        m = an.mayor(mov, signo, cta)
+        m = m.rename(columns={"fecha": "Fecha", "documento": "Documento", "tercero": "Tercero", "glosa": "Detalle", "cuenta": "Cuenta",
+                              "debe": c_debe, "haber": c_haber, "saldo": "Saldo"})
+        tabla(m[["Fecha", "Cuenta", "Documento", "Tercero", "Detalle", c_debe, c_haber, "Saldo"]].round(2))
+    with tabs[2]:
+        m = an.mayor(mov, signo, "Todas")
+        fig = go.Figure(go.Scatter(x=m["fecha"], y=m["saldo"], mode="lines+markers", line=dict(color="#1f3a5f")))
+        fig.update_layout(title=f"Evolución – {cfg['saldo'].lower()}", height=340, margin=dict(t=50, b=20))
+        fig.update_xaxes(type="category")
+        st.plotly_chart(fig, width="stretch")
+    if "terceros" in cfg:
+        with tabs[3]:
+            ent = an.entradas_por_tercero(mov)
+            if ent.empty:
+                st.info("Sin entradas registradas.")
+            else:
+                tabla(con_total(ent, ["Entradas"], "Nombre"))
+                grafico_barras(list(ent["Nombre"].head(10)), list(ent["Entradas"].head(10)), cfg["terceros"])
 
 
 # ------------------------------------------------------------------ main
@@ -801,24 +943,51 @@ modo = emp.get("modo") or "lector"
 docs = db.listar(owner)
 pend = sum(1 for d in docs if d["estado"] == "pendiente")
 
+entrada = ("registrar", "✍️ Registrar operación", pg_registrar) if modo == "simple" else ("subir", "⬆️ Subir documentos", pg_subir)
+LIBROS = {"compras": "Registro de Compras", "ventas": "Registro de Ventas", "planillas": "Planillas",
+          "impuestos": f"{p['impuesto']} y tributos", "diario": "Libro Diario", "docs": "Documentos"}
+RUTAS = {"dash": pg_dashboard, "eeff": pg_eeff, entrada[0]: entrada[2], "analisis": pg_analisis, "config": pg_config,
+         "compras": lambda o, e, pp, d: pg_registro("Registro de Compras", "compra", d),
+         "ventas": lambda o, e, pp, d: pg_registro("Registro de Ventas", "venta", d),
+         "planillas": pg_planillas, "impuestos": pg_impuestos, "diario": pg_diario, "docs": pg_documentos}
+
+
+def ir(destino):
+    st.session_state["pagina"] = destino
+
+
+def ir_libros():
+    if st.session_state.get("pagina") not in LIBROS:
+        st.session_state["pagina"] = "compras"
+
+
+if st.session_state.get("pagina") not in RUTAS:           # p. ej. tras cambiar de modo
+    st.session_state["pagina"] = "dash"
+pag = st.session_state["pagina"]
+
 with st.sidebar:
     st.markdown(f"### 📒 ContaIA\n**{emp['nombre']}**  \n{p['id_fiscal']} {emp['id_fiscal']} · {p['nombre']}")
-    entrada = ("registrar", "✍️ Registrar operación", pg_registrar) if modo == "simple" else ("subir", "⬆️ Subir documentos", pg_subir)
-    paginas = {"dash": ("📊 Dashboard", pg_dashboard),
-               entrada[0]: (entrada[1], entrada[2]),
-               "diario": ("📘 Libro Diario", pg_diario),
-               "compras": ("🧾 Registro de Compras", lambda o, e, pp, d: pg_registro("Registro de Compras", "compra", d)),
-               "ventas": ("💰 Registro de Ventas", lambda o, e, pp, d: pg_registro("Registro de Ventas", "venta", d)),
-               "planillas": ("👥 Planillas", pg_planillas),
-               "impuestos": (f"🏛️ {p['impuesto']} y tributos", pg_impuestos),
-               "eeff": ("📑 Estados financieros", pg_eeff),
-               "docs": ("🗂️ Documentos", pg_documentos),
-               "config": ("⚙️ Configuración", pg_config)}
 
-    sel = st.radio("Menú", list(paginas), format_func=lambda k: paginas[k][0], label_visibility="collapsed", key="menu")
+    def nav(clave, etiqueta):
+        st.button(etiqueta, key=f"nav_{clave}", type="primary" if pag == clave else "secondary", width="stretch",
+                  on_click=ir, args=(clave,))
+
+    nav("dash", "📊 Dashboard")
+    nav("eeff", "📑 Estados financieros")
+    nav(entrada[0], entrada[1])
+    en_libros = pag in LIBROS
+    st.button("📚 Libros auxiliares " + ("▾" if en_libros else "▸"), key="nav_libros", type="primary" if en_libros else "secondary",
+              width="stretch", on_click=ir_libros)
+    if en_libros:
+        for clave, etiqueta in LIBROS.items():
+            st.button(etiqueta, key=f"sub_{clave}" + ("__activo" if pag == clave else ""), width="stretch", on_click=ir, args=(clave,))
+    nav("analisis", "🔎 Análisis de cuenta")
+    nav("config", "⚙️ Configuración")
     if pend:
         st.warning(f"Tienes {pend} {'operación(es)' if modo == 'simple' else 'documento(s)'} por revisar en «{entrada[1][2:].strip()}».")
     st.caption("Tus datos están ligados a este navegador. No borres las cookies ni uses modo incógnito; "
                "en Configuración tienes un enlace de recuperación y un respaldo.")
 
-paginas[sel][1](owner, emp, p, docs)
+if pag in LIBROS:
+    st.caption(f"Libros auxiliares › {LIBROS[pag]}")
+RUTAS[pag](owner, emp, p, docs)
