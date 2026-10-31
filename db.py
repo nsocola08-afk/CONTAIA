@@ -15,8 +15,12 @@ def _url():
     u = os.environ.get("DATABASE_URL", "").strip()
     if not u:
         return "sqlite:///contaia.db"
-    if u.startswith("postgres://"):
-        u = u.replace("postgres://", "postgresql://", 1)
+    # Railway entrega "postgres://" o "postgresql://". Se fuerza el conector psycopg2 (el instalado),
+    # porque las versiones nuevas de SQLAlchemy usan otro por defecto.
+    for prefijo in ("postgres://", "postgresql://"):
+        if u.startswith(prefijo):
+            u = "postgresql+psycopg2://" + u[len(prefijo):]
+            break
     return u
 
 

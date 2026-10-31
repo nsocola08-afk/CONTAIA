@@ -1,7 +1,7 @@
 streamlit>=1.60
 streamlit-cookies-controller>=0.0.4
 boto3>=1.35
-sqlalchemy>=2.0
+sqlalchemy>=2.0,<3
 psycopg2-binary>=2.9
 pandas>=2.1
 openpyxl>=3.1
