@@ -49,6 +49,12 @@ button[data-testid="stBaseButton-primary"]:hover, button[data-testid="stBaseButt
 [data-testid="stSidebar"] label[data-testid="stRadioOption"]:hover{background:#c9d4e4}
 [data-testid="stSidebar"] label[data-testid="stRadioOption"][data-selected="true"]{background:#1f3a5f}
 [data-testid="stSidebar"] label[data-testid="stRadioOption"][data-selected="true"] *{color:#fff !important}
+/* Selector de estado financiero: botones rectangulares */
+[data-testid="stButtonGroup"] button{border-radius:0 !important; box-shadow:none !important; border:0 !important;
+  background:#dde4ee !important; color:#1f3a5f !important; font-weight:600 !important; padding:.55rem 1.2rem !important;}
+[data-testid="stButtonGroup"] button:hover{background:#c9d4e4 !important;}
+[data-testid="stButtonGroup"] button[aria-checked="true"], [data-testid="stButtonGroup"] button[aria-pressed="true"],
+[data-testid="stButtonGroup"] button[kind="segmented_controlActive"]{background:#1f3a5f !important; color:#fff !important;}
 /* La barra superior de Streamlit conserva su estilo */
 [data-testid="stHeader"] button, [data-testid="stToolbar"] button{
   background:transparent !important; min-height:0; padding:.25rem .5rem !important;}
@@ -431,30 +437,31 @@ def pg_eeff(owner, emp, p, docs):
     if df_all.empty:
         return st.info("Sin asientos registrados.")
     g, df = p["grupos"], cont.filtrar(df_all, per)
-    c1, c2 = st.columns(2)
-    e = cont.estado_resultados(df, g)
-    filas = [("Ventas", e["ventas"]), ("(−) Descuentos y devoluciones", -e["descuentos"]), ("VENTAS NETAS", e["ventas_netas"]),
-             ("(−) Costo de ventas / compras", -e["costo"]), ("UTILIDAD BRUTA", e["utilidad_bruta"]),
-             ("(−) Gastos de personal", -e["personal"]), ("(−) Servicios de terceros", -e["servicios"]),
-             ("(−) Tributos", -e["tributos"]), ("(−) Otros gastos de gestión", -e["otros_gastos"]),
-             ("(−) Depreciación", -e["depreciacion"]), ("UTILIDAD OPERATIVA", e["utilidad_operativa"]),
-             ("(+) Otros ingresos", e["otros_ingresos"]), ("(−) Gastos financieros", -e["financieros"]),
-             ("RESULTADO ANTES DE IMPUESTOS", e["antes_impuestos"])]
-    c1.subheader("Estado de Resultados")
-    with c1:
-        estado(filas)
-    A, P, Pt, ta, tp, tpt = cont.situacion_financiera(df_all, g, per)
-    f2 = [("ACTIVO", None)] + list(A.items()) + [("TOTAL ACTIVO", ta), ("PASIVO", None)] + list(P.items()) + [("Total pasivo", tp),
-          ("PATRIMONIO", None)] + list(Pt.items()) + [("Total patrimonio", tpt), ("TOTAL PASIVO + PATRIMONIO", tp + tpt)]
-    c2.subheader("Estado de Situación Financiera")
-    with c2:
-        estado(f2)
+    opciones = ["Estado de Resultados", "Estado de Situación Financiera", "Balance de Comprobación"]
+    st.write("Seleccionar estado financiero")
+    elegido = st.segmented_control("Seleccionar estado financiero", opciones, default=opciones[0], key="eeff_sel",
+                                   label_visibility="collapsed") or opciones[0]
+    st.subheader(elegido)
+    if elegido == opciones[0]:
+        e = cont.estado_resultados(df, g)
+        estado([("Ventas", e["ventas"]), ("(−) Descuentos y devoluciones", -e["descuentos"]), ("VENTAS NETAS", e["ventas_netas"]),
+                ("(−) Costo de ventas / compras", -e["costo"]), ("UTILIDAD BRUTA", e["utilidad_bruta"]),
+                ("(−) Gastos de personal", -e["personal"]), ("(−) Servicios de terceros", -e["servicios"]),
+                ("(−) Tributos", -e["tributos"]), ("(−) Otros gastos de gestión", -e["otros_gastos"]),
+                ("(−) Depreciación", -e["depreciacion"]), ("UTILIDAD OPERATIVA", e["utilidad_operativa"]),
+                ("(+) Otros ingresos", e["otros_ingresos"]), ("(−) Gastos financieros", -e["financieros"]),
+                ("RESULTADO ANTES DE IMPUESTOS", e["antes_impuestos"])])
+    elif elegido == opciones[1]:
+        A, P, Pt, ta, tp, tpt = cont.situacion_financiera(df_all, g, per)
+        estado([("ACTIVO", None)] + list(A.items()) + [("TOTAL ACTIVO", ta), ("PASIVO", None)] + list(P.items())
+               + [("Total pasivo", tp), ("PATRIMONIO", None)] + list(Pt.items())
+               + [("Total patrimonio", tpt), ("TOTAL PASIVO + PATRIMONIO", tp + tpt)])
         if abs(ta - tp - tpt) > 0.05:
             st.error("El balance no cuadra: revisa los asientos (puede faltar el aporte de capital o saldos iniciales).")
         else:
             st.success("Balance cuadrado")
-    st.subheader("Balance de Comprobación")
-    tabla(cont.balance_comprobacion(df))
+    else:
+        tabla(cont.balance_comprobacion(df))
 
 
 def pg_documentos(owner, emp, p, docs):
@@ -511,8 +518,17 @@ def pg_config(owner, emp, p, docs):
     st.write("Tus datos están ligados a **este navegador**. Si borras las cookies, usas modo incógnito o cambias de equipo, "
              "guarda este enlace privado para recuperarlos (no lo compartas: quien lo tenga ve tu contabilidad):")
     st.code(enlace_recuperacion(owner), language=None)
+    st.subheader("Empezar nuevamente")
+    st.write("Vuelves a la pantalla inicial para registrar los datos de una empresa (puedes cambiar de país). "
+             "**Se borrarán los datos de la empresa, todos los documentos y los asientos.** Descarga antes tu respaldo.")
+    ok_reset = st.checkbox("Entiendo que se borrará todo y no se puede deshacer", key="ok_reset")
+    if st.button("Empezar nuevamente", disabled=not ok_reset, key="btn_reset"):
+        db.borrar_empresa(owner)
+        for k in ("menu", "eeff_sel", "up_n", "up_err", "ok_reset", "nat_up", "nota_up", "per_dash", "per_eeff"):
+            st.session_state.pop(k, None)
+        st.rerun()
     with st.expander("Zona de peligro"):
-        if st.checkbox("Entiendo que se borrarán todos mis documentos y asientos") and st.button("Borrar todo"):
+        if st.checkbox("Entiendo que se borrarán todos mis documentos y asientos") and st.button("Borrar solo documentos y asientos"):
             db.borrar_todo(owner); st.rerun()
 
 

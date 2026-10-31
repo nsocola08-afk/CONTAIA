@@ -159,6 +159,14 @@ def duplicado(owner, doc):
         return c.execute(q).first() is not None
 
 
+def borrar_empresa(owner):
+    """Empezar de nuevo: borra documentos, archivos y los datos de la empresa de esta persona."""
+    with engine().begin() as c:
+        c.execute(delete(archivos).where(archivos.c.owner_id == owner))
+        c.execute(delete(documentos).where(documentos.c.owner_id == owner))
+        c.execute(delete(empresas).where(empresas.c.owner_id == owner))
+
+
 def borrar_todo(owner):
     with engine().begin() as c:
         c.execute(delete(archivos).where(archivos.c.owner_id == owner))
