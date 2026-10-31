@@ -165,3 +165,61 @@ def entradas_por_tercero(df):
     g = d.groupby("clave")["debe"].sum()
     out = pd.DataFrame([[ficha[k][0], ficha[k][1], round(v, 2)] for k, v in g.items()], columns=["ID", "Nombre", "Entradas"])
     return out.sort_values("Entradas", ascending=False).reset_index(drop=True)
+
+
+# ------------------------------------------------------------------------------------------ corriente / no corriente
+def parte_no_corriente(docs, tokens, signo, hasta, corte):
+    """Parte de un saldo por cobrar (signo 1) o por pagar (signo −1) cuyo vencimiento es posterior a 12 meses del corte.
+    Los cobros y pagos se aplican a las facturas más antiguas. Sin fecha límite, se considera de corto plazo."""
+    from datetime import timedelta
+    mov = movimientos(docs, tokens, hasta=hasta)
+    if mov.empty:
+        return 0.0
+    vence = {d["id"]: d.get("vence") for d in docs}
+    limite = corte + timedelta(days=365)
+    mov = asignar_terceros(mov)
+    total = 0.0
+    for _, g in mov.groupby("clave", sort=False):
+        abiertos = []
+        for r in g.sort_values(["fecha", "doc_id"], kind="stable").itertuples():
+            neto = (r.debe - r.haber) * signo
+            if neto > 1e-9:
+                v = vence.get(r.doc_id) or r.fecha
+                try:
+                    v = date.fromisoformat(v)
+                except ValueError:
+                    v = date.fromisoformat(r.fecha)
+                abiertos.append([v, neto])
+            elif neto < -1e-9:
+                credito = -neto
+                while credito > 1e-9 and abiertos:
+                    t = min(abiertos[0][1], credito)
+                    abiertos[0][1] -= t
+                    credito -= t
+                    if abiertos[0][1] <= 1e-9:
+                        abiertos.pop(0)
+        total += sum(m for v, m in abiertos if v > limite)
+    return round(total, 2)
+
+
+def situacion_clasificada(docs, df, g, per):
+    """Situación financiera con activo y pasivo corriente / no corriente. Devuelve secciones listas para mostrar."""
+    import calendar
+    A, P, Pt, ta, tp, tpt = cont.situacion_financiera(df, g, per)
+    if per in (None, "Todo"):
+        hasta, corte = None, date.today()
+    else:
+        a, m = int(per[:4]), int(per[5:7])
+        corte = date(a, m, calendar.monthrange(a, m)[1])
+        hasta = corte.isoformat()
+    nc_cxc = min(max(parte_no_corriente(docs, g["cxc"], 1, hasta, corte), 0.0), max(A["Cuentas por cobrar"], 0.0))
+    nc_cxp = min(max(parte_no_corriente(docs, g["cxp"], -1, hasta, corte), 0.0), max(P["Cuentas por pagar"], 0.0))
+    ac = [("Efectivo y equivalentes", A["Efectivo y equivalentes"]), ("Cuentas por cobrar", A["Cuentas por cobrar"] - nc_cxc),
+          ("Inventarios", A["Inventarios"]), ("Tributos por recuperar", A["Tributos por recuperar"])]
+    anc = ([("Cuentas por cobrar a largo plazo", nc_cxc)] if nc_cxc > 0 else []) + \
+          [("Inmuebles, maquinaria y equipo (neto)", A["Inmuebles, maquinaria y equipo (neto)"])]
+    pc = [("Tributos por pagar", P["Tributos por pagar"]), ("Remuneraciones por pagar", P["Remuneraciones por pagar"]),
+          ("Cuentas por pagar", P["Cuentas por pagar"] - nc_cxp)]
+    pnc = [("Cuentas por pagar a largo plazo", nc_cxp)]
+    return dict(ac=ac, anc=anc, pc=pc, pnc=pnc, pt=list(Pt.items()), ta=ta, tp=tp, tpt=tpt, corte=corte,
+                tac=sum(v for _, v in ac), tanc=sum(v for _, v in anc), tpc=sum(v for _, v in pc), tpnc=sum(v for _, v in pnc))

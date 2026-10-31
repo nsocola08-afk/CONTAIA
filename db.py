@@ -53,6 +53,7 @@ documentos = Table(
     Column("glosa", Text), Column("alertas", Text),     # alertas: lista JSON
     Column("asiento", Text),                            # lista JSON de líneas
     Column("archivo_nombre", String(250)),
+    Column("vence", String(10)),                        # fecha límite de pago o cobro (AAAA-MM-DD), opcional
     Column("creado", DateTime, default=datetime.utcnow),
 )
 
@@ -76,6 +77,9 @@ def engine():
             if nombre_col not in existentes:
                 with _engine.begin() as c:
                     c.execute(text(f"ALTER TABLE empresas ADD COLUMN {nombre_col} {tipo_col}"))
+        if "vence" not in {c["name"] for c in inspect(_engine).get_columns("documentos")}:
+            with _engine.begin() as c:
+                c.execute(text("ALTER TABLE documentos ADD COLUMN vence VARCHAR(10)"))
     return _engine
 
 
@@ -116,6 +120,7 @@ def crear_documento(owner, doc, archivo_nombre, mime, contenido, estado="pendien
         no_gravado=doc["no_gravado"], total=doc["total"], glosa=doc["glosa"],
         alertas=json.dumps(doc["alertas"], ensure_ascii=False),
         asiento=json.dumps(doc["asiento"], ensure_ascii=False), archivo_nombre=archivo_nombre,
+        vence=doc.get("vence") or None,
     )
     with engine().begin() as c:
         doc_id = c.execute(insert(documentos).values(**valores)).inserted_primary_key[0]

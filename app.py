@@ -7,11 +7,13 @@ from datetime import date, datetime, timedelta
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 from streamlit_cookies_controller import CookieController
 
 import claude_bedrock as ia
 import analisis as an
 import contabilidad as cont
+import informe
 import db
 import operaciones as ops
 import paises
@@ -224,11 +226,11 @@ def estado(filas):
     """Estado financiero completo, sin scroll interno. Filas con 3er elemento "t" = total (celeste y negrita)."""
     filas = [tuple(f) + (("",) if len(f) == 2 else ()) for f in filas]
     df = pd.DataFrame([(c, "" if v is None else money(v)) for c, v, _ in filas], columns=["Concepto", "Importe"])
-    tot = [i for i, f in enumerate(filas) if f[2] == "t"]
-    css = "background-color:#d9e8f6; font-weight:700; color:#14284a"
-    tot_idx = set(tot)
+    estilos = {"t": "background-color:#e2ecf7; font-weight:700; color:#14284a",     # secciones y totales principales
+               "s": "background-color:#eff5fb; font-weight:700; color:#14284a"}     # subtotales (más claro)
+    tot = {i: estilos[f[2]] for i, f in enumerate(filas) if f[2] in estilos}
     n = len(df)
-    sty = df.style.apply(lambda d: pd.DataFrame([[css] * d.shape[1] if i in tot_idx else [""] * d.shape[1]
+    sty = df.style.apply(lambda d: pd.DataFrame([[tot[i]] * d.shape[1] if i in tot else [""] * d.shape[1]
                                                  for i in range(n)], index=d.index, columns=d.columns), axis=None)
     sty = sty.set_properties(subset=["Importe"], **{"text-align": "right"}).hide(axis="index")
     st.table(sty)
@@ -440,6 +442,13 @@ def pg_registrar(owner, emp, p, docs):
                                                  help="Importes del comprobante que no llevan impuesto (exonerado, otros cargos).")
                 st.caption("Total = base imponible + monto del impuesto + no gravado.")
             d["forma"] = st.radio("Forma de pago o cobro", ops.FORMAS, horizontal=True, key=K("forma"))
+            if d["forma"] == ops.FORMAS[0]:
+                fv, _ = st.columns([1, 2])
+                fecha_base = date.fromisoformat(d["fecha"])
+                d["vence"] = fv.date_input("Fecha límite de cobro" if tipo_op == "Venta" else "Fecha límite de pago",
+                                           value=fecha_base + timedelta(days=30), key=K("vence"),
+                                           help="Puede ser aproximada. Si vence en más de 12 meses, el saldo se muestra como no corriente "
+                                                "en la Situación Financiera.").isoformat()
 
             if tipo_op == "Venta":
                 por_def = 1 if emp["actividad"] in ("Servicios", "Restaurante") else 0
@@ -550,11 +559,13 @@ def revisar(owner, emp, p, d):
     with st.expander(("✅ " if ok_cuadre and not d["alertas"] else "⚠️ ") + etiqueta, expanded=True):
         for a in d["alertas"]:
             st.warning(a)
-        c1, c2, c3 = st.columns([1, 1, 2])
+        c1, c2, c3, c4 = st.columns([1, 1, 1, 2])
         fecha = c1.text_input("Fecha (AAAA-MM-DD)", d["fecha"], key=f"f_{d['id']}")
         tipos = ["compra", "venta", "planilla", "honorarios", "otro"]
         tipo = c2.selectbox("Tipo", tipos, index=tipos.index(d["tipo"]) if d["tipo"] in tipos else 4, key=f"t_{d['id']}")
-        glosa = c3.text_input("Glosa", d["glosa"], key=f"g_{d['id']}")
+        vence = c3.text_input("Fecha límite de pago", d.get("vence") or "", key=f"v_{d['id']}", placeholder="AAAA-MM-DD",
+                              help="Opcional. Para ventas o compras a crédito: sirve para separar corriente y no corriente.").strip()
+        glosa = c4.text_input("Glosa", d["glosa"], key=f"g_{d['id']}")
         tercero = " ".join(x for x in (d["contraparte_nombre"], f"({d['contraparte_id']})" if d["contraparte_id"] else "") if x)
         st.caption(f"{tercero + ' · ' if tercero else ''}Base {money(d['base'])} · "
                    f"{p['impuesto']} {money(d['impuesto'])} · Total {money(d['total'])}")
@@ -611,16 +622,17 @@ def revisar(owner, emp, p, d):
             st.caption("Esta operación genera varios asientos; cada uno debe cuadrar por separado. "
                        "Las líneas con el mismo «Asiento N°» forman un asiento.")
         b1, b2, b3, _ = st.columns(4)
-        fecha_ok = bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", fecha))
+        fecha_ok = bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", fecha)) and (not vence or bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", vence)))
         if b1.button("✔ Registrar", key=f"r_{d['id']}", type="primary", disabled=not (cuadra and fecha_ok and not invalidas)):
             if db.duplicado(owner, {**d, "tipo": tipo}) and not st.session_state.get(f"dup_{d['id']}"):
                 st.session_state[f"dup_{d['id']}"] = True
                 st.warning("Este comprobante ya está registrado. Pulsa Registrar otra vez si quieres duplicarlo.")
             else:
-                db.actualizar_documento(owner, d["id"], estado="registrado", fecha=fecha, tipo=tipo, glosa=glosa, asiento=lineas)
+                db.actualizar_documento(owner, d["id"], estado="registrado", fecha=fecha, tipo=tipo, glosa=glosa, asiento=lineas,
+                                        vence=vence or None)
                 st.rerun()
         if b2.button("Guardar cambios", key=f"s_{d['id']}"):
-            db.actualizar_documento(owner, d["id"], fecha=fecha, tipo=tipo, glosa=glosa, asiento=lineas)
+            db.actualizar_documento(owner, d["id"], fecha=fecha, tipo=tipo, glosa=glosa, asiento=lineas, vence=vence or None)
             st.toast("Cambios guardados")
         if b3.button("Descartar", key=f"x_{d['id']}"):
             db.eliminar_documento(owner, d["id"])
@@ -679,7 +691,7 @@ def pg_eeff(owner, emp, p, docs):
     if df_all.empty:
         return st.info("Sin asientos registrados.")
     g, df = p["grupos"], cont.filtrar(df_all, per)
-    opciones = ["Estado de Resultados", "Estado de Situación Financiera", "Balance de Comprobación"]
+    opciones = ["Estado de Resultados", "Estado de Situación Financiera", "Balance de Comprobación", "Resumen financiero"]
     st.write("Seleccionar estado financiero")
     elegido = st.segmented_control("Seleccionar estado financiero", opciones, default=opciones[0], key="eeff_sel",
                                    label_visibility="collapsed") or opciones[0]
@@ -701,22 +713,41 @@ def pg_eeff(owner, emp, p, docs):
             st.caption("Estimación: la tasa anual se aplica a la utilidad del periodo elegido. La determinación definitiva del "
                        "impuesto la hace tu contador en la declaración anual.")
     elif elegido == opciones[1]:
-        A, P, Pt, ta, tp, tpt = cont.situacion_financiera(df_all, g, per)
-        corr = ["Efectivo y equivalentes", "Cuentas por cobrar", "Inventarios", "Tributos por recuperar"]
-        Ac = [(k, v) for k, v in A.items() if k in corr]
-        Anc = [(k, v) for k, v in A.items() if k not in corr]
-        estado([("ACTIVO", None, "t"), ("ACTIVO CORRIENTE", None, "t")] + Ac
-               + [("Total activo corriente", sum(v for _, v in Ac), "t"), ("ACTIVO NO CORRIENTE", None, "t")] + Anc
-               + [("Total activo no corriente", sum(v for _, v in Anc), "t"), ("TOTAL ACTIVO", ta, "t"),
-                  ("PASIVO", None, "t")] + list(P.items())
-               + [("Total pasivo", tp, "t"), ("PATRIMONIO", None, "t")] + list(Pt.items())
-               + [("Total patrimonio", tpt, "t"), ("TOTAL PASIVO + PATRIMONIO", tp + tpt, "t")])
+        S = an.situacion_clasificada(docs, df_all, g, per)
+        ta, tp, tpt = S["ta"], S["tp"], S["tpt"]
+        estado([("ACTIVO", None, "t"), ("ACTIVO CORRIENTE", None, "s")] + S["ac"]
+               + [("TOTAL ACTIVO CORRIENTE", S["tac"], "s"), ("ACTIVO NO CORRIENTE", None, "s")] + S["anc"]
+               + [("TOTAL ACTIVO NO CORRIENTE", S["tanc"], "s"), ("TOTAL ACTIVO", ta, "s"),
+                  ("PASIVO", None, "t"), ("PASIVO CORRIENTE", None, "s")] + S["pc"]
+               + [("TOTAL PASIVO CORRIENTE", S["tpc"], "s"), ("PASIVO NO CORRIENTE", None, "s")] + S["pnc"]
+               + [("TOTAL PASIVO NO CORRIENTE", S["tpnc"], "s"), ("TOTAL PASIVO", tp, "s"),
+                  ("PATRIMONIO", None, "t")] + S["pt"]
+               + [("TOTAL PATRIMONIO", tpt, "s"), ("TOTAL PASIVO Y PATRIMONIO", tp + tpt, "s")])
+        st.caption("Corriente: vence dentro de 12 meses del corte. Las cuentas por cobrar y por pagar sin fecha límite se tratan como "
+                   f"de corto plazo. Corte: {S['corte'].isoformat()}.")
         if abs(ta - tp - tpt) > 0.05:
             st.error("El balance no cuadra: revisa los asientos (puede faltar el aporte de capital o saldos iniciales).")
         else:
             st.success("Balance cuadrado")
-    else:
+    elif elegido == opciones[2]:
         tabla(cont.balance_comprobacion(df))
+    else:
+        st.write("Informe de la empresa en hojas A4: portada, situación financiera, resultados, indicadores, análisis de cuentas "
+                 "y conclusiones. Elige el periodo arriba y pulsa el botón.")
+        if st.button("Generar resumen", type="primary", key="gen_resumen"):
+            with st.spinner("Preparando el informe…"):
+                st.session_state["informe"] = (per, informe.construir(emp, p, docs, per, SIM(emp, p)))
+        guardado = st.session_state.get("informe")
+        if guardado:
+            per_i, inf = guardado
+            if per_i != per:
+                st.caption(f"Este informe corresponde al periodo «{per_i}». Pulsa «Generar resumen» para actualizarlo al periodo elegido.")
+            try:
+                pdf = informe.a_pdf(inf)
+                st.download_button("Descargar PDF", pdf, file_name=f"informe_financiero_{per_i}.pdf", mime="application/pdf", key="dl_inf")
+            except Exception as e:  # noqa: BLE001
+                st.error(f"No se pudo preparar el PDF: {e}")
+            components.html(informe.a_html_doc(inf), height=len(inf["paginas"]) * 1141, scrolling=False)
 
 
 def pg_documentos(owner, emp, p, docs):

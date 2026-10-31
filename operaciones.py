@@ -82,7 +82,8 @@ def _doc(p, tipo, d, comprobante, im, lineas, glosa):
     return {"tipo": tipo, "tipo_comprobante": comprobante, "serie": serie, "numero": numero, "fecha": d["fecha"],
             "contraparte_id": (d.get("id") or "").strip(), "contraparte_nombre": (d.get("nombre") or "").strip(),
             "moneda": d["moneda"], "tipo_cambio": float(d["tc"] or 1), "base": im["base"], "impuesto": im["impuesto"],
-            "no_gravado": im["no_gravado"], "total": im["total"], "glosa": glosa, "asiento": lineas, "alertas": []}
+            "no_gravado": im["no_gravado"], "total": im["total"], "glosa": glosa, "asiento": lineas, "alertas": [],
+            "vence": d.get("vence") or None}
 
 
 def _nota_credito(doc):
