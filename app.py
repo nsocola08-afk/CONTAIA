@@ -170,15 +170,32 @@ def df_registro(docs, tipo):
     return pd.DataFrame(f)
 
 
+def etiqueta_asiento(lineas, g):
+    cuentas = [str(l["cuenta"]) for l in lineas]
+    if any(c.startswith(("9", "79")) for c in cuentas):
+        return "Destino del gasto por función"
+    if any(c.startswith("69") for c in cuentas):
+        return "Costo de ventas"
+    if any(c.startswith("20") for c in cuentas):
+        return "Destino de la compra"
+    return f"Asiento {g}"
+
+
 def df_diario(docs):
+    """Un número de asiento por cada grupo de líneas (una compra de mercadería en Perú genera 2)."""
     filas, n = [], 0
     for d in docs:
         if d["estado"] != "registrado":
             continue
-        n += 1
+        grupos = {}
         for l in d["asiento"]:
-            filas.append({"N°": n, "Fecha": d["fecha"], "Cuenta": l["cuenta"], "Denominación": l["nombre"],
-                          "Debe": l["debe"], "Haber": l["haber"], "Glosa": d["glosa"]})
+            grupos.setdefault(int(l.get("grupo", 1) or 1), []).append(l)
+        for g in sorted(grupos):
+            n += 1
+            glosa = d["glosa"] if g == 1 else f"{etiqueta_asiento(grupos[g], g)} – {d['glosa']}"
+            for l in grupos[g]:
+                filas.append({"N°": n, "Fecha": d["fecha"], "Cuenta": l["cuenta"], "Denominación": l["nombre"],
+                              "Debe": l["debe"], "Haber": l["haber"], "Glosa": glosa})
     return pd.DataFrame(filas)
 
 
@@ -282,22 +299,39 @@ def revisar(owner, emp, p, d):
         glosa = c3.text_input("Glosa", d["glosa"], key=f"g_{d['id']}")
         st.caption(f"{d['contraparte_nombre']} ({d['contraparte_id']}) · Base {money(d['base'])} · "
                    f"{p['impuesto']} {money(d['impuesto'])} · Total {money(d['total'])}")
-        base = pd.DataFrame(d["asiento"] or [{"cuenta": "", "nombre": "", "debe": 0.0, "haber": 0.0}])[["cuenta", "nombre", "debe", "haber"]]
+        if ia.pide_costo_venta(d["asiento"], d["tipo"], p):
+            c1, c2 = st.columns([3, 1])
+            costo = c1.number_input("Costo de la mercadería vendida (para el asiento de costo de ventas)", min_value=0.0,
+                                    step=1.0, key=f"cv_{d['id']}", help="Lo que te costó lo que vendiste (inventario permanente).")
+            c2.write("")
+            if c2.button("Agregar costo de ventas", key=f"cvb_{d['id']}", disabled=costo <= 0):
+                db.actualizar_documento(owner, d["id"], asiento=d["asiento"] + ia.lineas_costo_venta(d["asiento"], p, costo))
+                st.rerun()
+        filas = d["asiento"] or [{"cuenta": "", "nombre": "", "debe": 0.0, "haber": 0.0}]
+        base = pd.DataFrame([{"grupo": int(l.get("grupo", 1) or 1), "cuenta": l["cuenta"], "nombre": l["nombre"],
+                              "debe": l["debe"], "haber": l["haber"]} for l in filas])
         libres = bool(p.get("cuentas_libres"))
         ed = st.data_editor(base, num_rows="dynamic", width="stretch", hide_index=True, key=f"ed_{d['id']}",
-                            column_config={"cuenta": (st.column_config.TextColumn("Cuenta (código)", required=True) if libres
+                            column_config={"grupo": st.column_config.NumberColumn("Asiento N°", min_value=1, max_value=9, step=1,
+                                                                                  format="%d", default=1),
+                                           "cuenta": (st.column_config.TextColumn("Cuenta (código)", required=True) if libres
                                                       else st.column_config.SelectboxColumn("Cuenta", options=list(plan), required=True)),
                                            "nombre": st.column_config.TextColumn("Denominación", disabled=not libres),
                                            "debe": st.column_config.NumberColumn("Debe", format="%.2f", default=0.0),
                                            "haber": st.column_config.NumberColumn("Haber", format="%.2f", default=0.0)})
         lineas = [{"cuenta": str(r["cuenta"]).strip(), "nombre": plan.get(str(r["cuenta"]).strip()) or str(r["nombre"] or "").strip(),
-                   "debe": float(r["debe"] or 0), "haber": float(r["haber"] or 0)} for _, r in ed.iterrows() if str(r["cuenta"]).strip()]
+                   "debe": float(r["debe"] or 0), "haber": float(r["haber"] or 0),
+                   "grupo": int(r["grupo"]) if pd.notna(r["grupo"]) else 1}
+                  for _, r in ed.iterrows() if str(r["cuenta"]).strip()]
         invalidas = [l["cuenta"] for l in lineas if l["cuenta"] not in plan and not (
             libres and re.fullmatch(r"[1-5]\d{3,}", l["cuenta"]) and l["nombre"])]
         if invalidas:
             st.error("Cuenta inválida: " + ", ".join(invalidas) + (". Usa un código de 4 dígitos (1 a 5) y escribe su nombre." if libres else ". Elige una del plan."))
         cuadra, td, th = ia.validar_asiento(lineas)
-        (st.success if cuadra else st.error)(f"Debe {money(td)}  |  Haber {money(th)}" + ("" if cuadra else "  — el asiento no cuadra"))
+        (st.success if cuadra else st.error)(f"Debe {money(td)}  |  Haber {money(th)}" + ("" if cuadra else "  — un asiento no cuadra"))
+        if len({l["grupo"] for l in lineas}) > 1:
+            st.caption("Esta operación genera varios asientos; cada uno debe cuadrar por separado. "
+                       "Las líneas con el mismo «Asiento N°» forman un asiento.")
         b1, b2, b3, b4 = st.columns(4)
         fecha_ok = bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", fecha))
         if b1.button("✔ Registrar", key=f"r_{d['id']}", type="primary", disabled=not (cuadra and fecha_ok and not invalidas)):

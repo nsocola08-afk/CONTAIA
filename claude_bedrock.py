@@ -165,7 +165,7 @@ def normalizar(j, empresa, pais):
             else:
                 alertas.append(f"La cuenta {cta} no está en el plan de cuentas. Corrígela antes de registrar.")
         asiento.append({"cuenta": cta, "nombre": plan.get(cta) or nombre_ia,
-                        "debe": _num(l.get("debe")), "haber": _num(l.get("haber"))})
+                        "debe": _num(l.get("debe")), "haber": _num(l.get("haber")), "grupo": 1})
 
     fecha = str(j.get("fecha") or "")
     if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", fecha):
@@ -183,12 +183,101 @@ def normalizar(j, empresa, pais):
     }
     if doc["tipo"] in ("compra", "venta") and abs(doc["base"] + doc["impuesto"] + doc["no_gravado"] - doc["total"]) > 0.05:
         alertas.append("Base + impuesto + no gravado no suman el total. Revisa los montos.")
+    doc = agregar_destino(doc, pais)
+    doc = agregar_destino_funcion(doc, pais)
+    if pide_costo_venta(doc["asiento"], doc["tipo"], pais):
+        doc["alertas"].append("Venta de mercaderías: falta el asiento de costo de ventas (Debe 69 / Haber 20). "
+                              "Ingresa el costo de lo vendido más abajo.")
     return doc
 
 
+def _agregar_asiento(doc, pais, pares, alerta=None):
+    """Agrega un asiento nuevo (grupo siguiente) con líneas (cuenta, debe, haber)."""
+    plan = dict(pais["plan"])
+    g = max([int(l.get("grupo", 1) or 1) for l in doc["asiento"]] or [1]) + 1
+    for cta, d, h in pares:
+        doc["asiento"].append({"cuenta": cta, "nombre": plan[cta], "debe": round(d, 2), "haber": round(h, 2), "grupo": g})
+    if alerta:
+        doc["alertas"].append(alerta)
+
+
+def agregar_destino(doc, pais):
+    """Perú: a una compra de mercadería le agrega el asiento de destino: Debe 20 / Haber 61.
+    Si la compra ya va directo a la 20, no agrega nada. Una nota de crédito revierte el destino."""
+    cfg = pais.get("destino_compra")
+    if not cfg or doc["tipo"] != "compra":
+        return doc
+    monto = round(sum(l["debe"] - l["haber"] for l in doc["asiento"]
+                      if any(str(l["cuenta"]).startswith(p) for p in cfg["cuentas_compra"])), 2)
+    if abs(monto) < 0.01:
+        return doc
+    inv, var, a = cfg["inventario"], cfg["variacion"], abs(monto)
+    pares = [(inv, a, 0), (var, 0, a)] if monto > 0 else [(var, a, 0), (inv, 0, a)]
+    _agregar_asiento(doc, pais, pares, "Se agregó el asiento de destino de la compra (Debe 20 Mercaderías / Haber 61 Variación de existencias).")
+    return doc
+
+
+def agregar_destino_funcion(doc, pais):
+    """Perú: a cada gasto de las cuentas 62, 63, 64, 65 y 68 le agrega el destino por función:
+    Debe 94 Gastos administrativos (o 95 Gastos de ventas) / Haber 791 Cargas imputables."""
+    cfg = pais.get("destino_funcion")
+    if not cfg or doc["tipo"] == "venta":
+        return doc
+    adm = ven = 0.0
+    for l in doc["asiento"]:
+        if int(l.get("grupo", 1) or 1) != 1:
+            continue
+        cta = str(l["cuenta"])
+        if any(cta.startswith(p) for p in cfg["cuentas_gasto"]):
+            m = l["debe"] - l["haber"]
+            if any(cta.startswith(p) for p in cfg["ventas_prefijos"]):
+                ven += m
+            else:
+                adm += m
+    pares, total = [], 0.0
+    for cuenta_fn, m in ((cfg["administrativo"], round(adm, 2)), (cfg["ventas"], round(ven, 2))):
+        if abs(m) < 0.01:
+            continue
+        pares.append((cuenta_fn, m, 0) if m > 0 else (cuenta_fn, 0, -m))
+        total += m
+    if not pares:
+        return doc
+    pares.append((cfg["contrapartida"], 0, total) if total > 0 else (cfg["contrapartida"], -total, 0))
+    _agregar_asiento(doc, pais, pares, "Se agregó el destino por función (94 Gastos administrativos / 79). "
+                                      "Cambia a 95 Gastos de ventas si corresponde a ventas.")
+    return doc
+
+
+def lineas_costo_venta(asiento, pais, monto):
+    """Líneas del asiento de costo de ventas (inventario permanente): Debe 6911 / Haber 2011."""
+    cfg = pais["costo_venta"]
+    plan = dict(pais["plan"])
+    g = max([int(l.get("grupo", 1) or 1) for l in asiento] or [1]) + 1
+    monto = round(float(monto), 2)
+    return [{"cuenta": cfg["cuenta_costo"], "nombre": plan[cfg["cuenta_costo"]], "debe": monto, "haber": 0.0, "grupo": g},
+            {"cuenta": cfg["inventario"], "nombre": plan[cfg["inventario"]], "debe": 0.0, "haber": monto, "grupo": g}]
+
+
+def pide_costo_venta(doc_o_asiento, tipo, pais):
+    """True si es una venta de mercaderías sin asiento de costo de ventas (cuenta 69)."""
+    cfg = pais.get("costo_venta")
+    asiento = doc_o_asiento
+    if not cfg or tipo != "venta":
+        return False
+    vende = any(str(l["cuenta"]).startswith(cfg["ventas_prefijo"]) and l["haber"] > 0 for l in asiento)
+    tiene = any(str(l["cuenta"]).startswith("69") for l in asiento)
+    return vende and not tiene
+
+
 def validar_asiento(asiento):
-    d, h = sum(l["debe"] for l in asiento), sum(l["haber"] for l in asiento)
-    return abs(d - h) < 0.02 and d > 0, d, h
+    """Cada asiento (grupo 1, 2…) debe cuadrar por separado."""
+    grupos = {}
+    for l in asiento:
+        g = int(l.get("grupo", 1) or 1)
+        d, h = grupos.get(g, (0.0, 0.0))
+        grupos[g] = (d + l["debe"], h + l["haber"])
+    ok = bool(grupos) and all(abs(d - h) < 0.02 and d > 0 for d, h in grupos.values())
+    return ok, sum(d for d, _ in grupos.values()), sum(h for _, h in grupos.values())
 
 
 def extraer(nombre, mime, datos, empresa, pais):

@@ -28,13 +28,25 @@ PERU = {
         "otros_gastos": ["65", "66"], "financieros": ["67"], "depreciacion": ["68"],
         "efectivo": ["10"], "cxc": ["12", "13", "14", "16", "17", "18", "19"], "inventarios": ["2"], "fijo": ["3"],
         "impuestos": ["40"], "remuneraciones": ["41"], "cxp": ["42", "43", "44", "45", "46", "47", "48", "49"],
-        "capital": ["50", "52", "56", "57", "58"], "acumulados": ["59"], "resultado": ["6", "7"],
+        "capital": ["50", "52", "56", "57", "58"], "acumulados": ["59"],
+        # La 79 (cargas imputables) y la clase 9 son contrapartida analítica: no forman parte del resultado.
+        "resultado": ["6", "70", "71", "72", "73", "74", "75", "76", "77", "78"],
+        "analiticas": ["9", "79"],
     },
     "nomina": {"gasto": ["62", "6321"], "aportes": ["4031", "4032", "407", "40172"], "neto": ["4111", "4212"]},
     "columnas_nomina": [("EsSalud", ["4031"]), ("ONP/AFP", ["4032", "407"])],
     "cuentas_base": {"clientes": "1212", "proveedores": "4212", "iva_credito": "40111", "iva_debito": "40111",
                      "ventas": "70111", "compras": "60111", "capital": "5011", "banco": "1041"},
+    # Asiento de destino de las compras de mercadería: Debe 20 Mercaderías / Haber 61 Variación de existencias
+    "destino_compra": {"cuentas_compra": ["601", "609"], "inventario": "2011", "variacion": "6111"},
+    # Destino por función (elemento 9): Debe 94 / 95 — Haber 791. Aplica a gastos de las cuentas 62, 63, 64, 65 y 68.
+    "destino_funcion": {"cuentas_gasto": ["62", "63", "64", "65", "68"], "administrativo": "94", "ventas": "95",
+                        "ventas_prefijos": ["637"], "contrapartida": "791"},
+    # Costo de ventas (inventario permanente): Debe 6911 / Haber 2011, por el costo de lo vendido.
+    "costo_venta": {"cuenta_costo": "6911", "inventario": "2011", "ventas_prefijo": "701"},
     "reglas_ia": """
+- NO generes el asiento de destino a la cuenta 20 (Debe 20 / Haber 61), ni el destino por función (clase 9 / 79), ni el costo de ventas (69 / 20):
+  la aplicación los agrega o los pide después. Propón solo el asiento del comprobante.
 - IGV 18% (16% IGV + 2% IPM). Cuenta del IGV: 40111.
 - Compra con factura: Debe gasto o inventario por la base + Debe 40111 por el IGV; Haber 4212 por el total.
 - Venta con factura o boleta: Debe 1212 por el total; Haber 40111 por el IGV; Haber 70xx por la base.
@@ -77,6 +89,9 @@ PERU = {
         ("6711", "Intereses por préstamos"), ("6811", "Depreciación de inmuebles, maquinaria y equipo"),
         ("70111", "Ventas de mercaderías – Terceros"), ("70411", "Ventas de servicios – Terceros"),
         ("7411", "Descuentos y rebajas concedidos"), ("7591", "Otros ingresos de gestión"), ("7711", "Ingresos financieros"),
+        ("6911", "Costo de ventas – Mercaderías manufacturadas"),
+        ("791", "Cargas imputables a cuentas de costos y gastos"),
+        ("94", "Gastos administrativos (destino por función)"), ("95", "Gastos de ventas (destino por función)"),
     ],
 }
 
