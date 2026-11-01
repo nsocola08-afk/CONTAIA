@@ -6,7 +6,8 @@ con el mismo formato que usa el lector de facturas, para que los dos modos compa
 """
 import claude_bedrock as ia
 
-TIPOS = ["Venta", "Compra (mercadería, insumos)", "Gasto (servicios y consumo)", "Activo fijo", "Honorarios",
+IA = "Registro inteligente (IA)"
+TIPOS = ["Venta", IA, "Compra (mercadería, insumos)", "Gasto (servicios y consumo)", "Activo fijo", "Honorarios",
          "Planilla", "Cobranza a cliente", "Pago a proveedor o deuda", "Aporte de capital", "Asiento manual"]
 FORMAS = ["A crédito (por cobrar o por pagar)", "Contado – banco", "Contado – caja"]
 COMPROBANTES = ["Factura", "Boleta de venta", "Recibo por honorarios", "Nota de crédito", "Nota de débito", "Ticket / otro"]

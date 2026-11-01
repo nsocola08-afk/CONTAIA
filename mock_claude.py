@@ -32,3 +32,18 @@ def respuesta_falsa(nombre, empresa, pista=""):
                         {"cuenta": cb["iva_credito"], "nombre": "x", "debe": igv, "haber": 0},
                         {"cuenta": cb["proveedores"], "nombre": "x", "debe": 0, "haber": total}],
             "alertas": ["Factura con posible detracción (prueba)."]}
+
+
+def operacion_falsa(texto, empresa, pais, hoy):
+    """Interpretación simulada para pruebas: busca palabras clave y el primer número."""
+    import re
+    t = texto.lower()
+    nums = re.findall(r"\d+(?:[.,]\d+)?", t.replace(" ", ""))
+    monto = float(nums[0].replace(",", ".")) if nums else 0
+    tipo = ("venta" if "vend" in t else "compra" if "compr" in t else "gasto" if "gast" in t else
+            "cobranza" if "cobr" in t else "pago" if "pagu" in t else "planilla" if "planilla" in t else "no_claro")
+    return {"tipo": tipo, "pregunta": "", "fecha": hoy, "monto": monto, "impuesto": "incluido",
+            "forma": "credito" if "crédito" in t or "credito" in t else "caja", "vence": None, "tercero_id": "", "tercero_nombre": "",
+            "comprobante": "Factura", "documento": "", "se_vende": "mercaderias", "cuenta": pais["cuentas_base"]["compras"],
+            "destino": "Proveedores", "bruto": monto, "moneda": empresa["moneda"], "tipo_cambio": 0,
+            "glosa": texto[:80], "supuestos": ["El monto incluye impuesto (supuesto de prueba)."]}

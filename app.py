@@ -153,21 +153,19 @@ def elegir_modo():
     c1, c2 = st.columns(2)
     with c1:
         with st.container(border=True):
-            st.markdown("### 📷 Lector de facturas")
-            st.write("Subes facturas, boletas, planillas o vouchers (PDF o foto). La IA los lee, los clasifica y propone el asiento. "
-                     "Tú revisas y registras.")
-            st.caption("Usa Claude en AWS (tiene un costo por documento).")
-            if st.button("Usar el lector de facturas", key="modo_lector", type="primary"):
-                st.session_state.modo_sel = "lector"
-                st.rerun()
-    with c2:
-        with st.container(border=True):
             st.markdown("### ✍️ Modo simple")
             st.write("Sin importar archivos. Tú registras cada operación (venta, compra, gasto, planilla…) llenando sus datos: "
                      "documento, moneda, tipo de cambio, monto e impuesto. La app arma el asiento.")
-            st.caption("No usa IA ni AWS: no tiene costo por documento.")
             if st.button("Usar el modo simple", key="modo_simple", type="primary"):
                 st.session_state.modo_sel = "simple"
+                st.rerun()
+    with c2:
+        with st.container(border=True):
+            st.markdown("### 📷 Lector de facturas")
+            st.write("Subes facturas, boletas, planillas o vouchers (PDF o foto). La IA los lee, los clasifica y propone el asiento. "
+                     "Tú revisas y registras.")
+            if st.button("Usar el lector de facturas", key="modo_lector", type="primary"):
+                st.session_state.modo_sel = "lector"
                 st.rerun()
 
 
@@ -402,6 +400,82 @@ def pg_subir(owner, emp, p, docs):
         revisar(owner, emp, p, d)
 
 
+def por_revisar(owner, emp, p, docs):
+    pend = [x for x in docs if x["estado"] == "pendiente"]
+    st.subheader(f"Por revisar ({len(pend)})")
+    if not pend:
+        st.caption("No hay operaciones pendientes.")
+    for x in pend:
+        revisar(owner, emp, p, x)
+
+
+CONSTRUCTORES = {"Venta": ops.venta, "Compra (mercadería, insumos)": ops.compra, "Gasto (servicios y consumo)": ops.compra,
+                 "Activo fijo": ops.compra, "Honorarios": ops.honorarios, "Planilla": ops.planilla,
+                 "Cobranza a cliente": ops.cobranza, "Pago a proveedor o deuda": ops.pago,
+                 "Aporte de capital": ops.aporte_capital, "Asiento manual": ops.manual}
+TIPO_IA_A_FORM = {"venta": "Venta", "compra": "Compra (mercadería, insumos)", "gasto": "Gasto (servicios y consumo)",
+                  "activo_fijo": "Activo fijo", "honorarios": "Honorarios", "planilla": "Planilla",
+                  "cobranza": "Cobranza a cliente", "pago": "Pago a proveedor o deuda", "aporte_capital": "Aporte de capital"}
+
+
+def registro_ia(owner, emp, p, n):
+    """Registro inteligente: el usuario escribe la operación y la IA rellena el formulario; el asiento queda por revisar."""
+    st.write("Escribe qué pasó, con tus palabras. La IA rellena los datos y deja el asiento **por revisar**: tú lo corriges o lo registras.")
+    st.caption("Ejemplo: «Vendí 15000 de mercadería, gaseosas de 1 lt que tenía en almacén, al cliente Distribuidora Sur, a crédito a 30 días». "
+               "Una operación por vez.")
+    if st.session_state.pop("ia_ok", None):
+        st.success("Asiento generado. Revísalo abajo, en «Por revisar», y pulsa Registrar.")
+    texto = st.text_area("Describe la operación", key=f"ia_txt_{n}", height=110, max_chars=1500,
+                         placeholder="Ej.: Compré 3000 de hamburguesas a Proveedor SAC, pagué por transferencia")
+    if st.button("Generar con IA", type="primary", key=f"ia_btn_{n}", disabled=not texto.strip()):
+        local, imp_n = emp["moneda"], p["impuesto"]
+        try:
+            with st.spinner("Interpretando la operación…"):
+                r = ia.interpretar_operacion(texto, emp, p, date.today().isoformat())
+        except (ValueError, RuntimeError) as e:
+            return st.error(str(e))
+        if r["tipo"] == "no_claro":
+            return st.warning(r["pregunta"])
+        tipo_op = TIPO_IA_A_FORM[r["tipo"]]
+        if r["moneda"] != local and r["tipo_cambio"] <= 0:
+            return st.warning(f"La operación está en {r['moneda']}: indica el tipo de cambio en la frase (por ejemplo «a 3.75») o usa el formulario.")
+        forma = {"credito": ops.FORMAS[0], "banco": ops.FORMAS[1], "caja": ops.FORMAS[2]}[r["forma"]]
+        if r["tipo"] in ("cobranza", "pago", "aporte_capital") and forma == ops.FORMAS[0]:
+            forma = ops.FORMAS[1]
+        d = {"moneda": r["moneda"], "tc": r["tipo_cambio"] or 1.0, "glosa": r["glosa"], "documento": r["documento"],
+             "id": r["tercero_id"], "nombre": r["tercero_nombre"], "forma": forma, "modo_imp": r["impuesto"],
+             "tasa": float(round((p["tasa_impuesto"] or 0.0) * 100, 2)), "igv_manual": 0.0, "ng_manual": 0.0,
+             "fecha": r["fecha"], "comprobante": r["comprobante"] if r["comprobante"] in ops.COMPROBANTES else "Factura",
+             "monto": r["monto"], "vence": r["vence"] if forma == ops.FORMAS[0] else None, "destino": r["destino"]}
+        if forma == ops.FORMAS[0] and not d["vence"] and r["tipo"] in ("venta", "compra", "gasto", "activo_fijo", "honorarios"):
+            d["vence"] = (date.fromisoformat(r["fecha"]) + timedelta(days=30)).isoformat()
+            r["supuestos"].append("No indicaste plazo: se supuso fecha límite de pago a 30 días.")
+        if r["tipo"] == "venta":
+            d["cuenta"] = p["cuentas_base"]["ventas" if r["se_vende"] == "mercaderias" else "ventas_servicios"]
+        elif r["tipo"] in ("compra", "gasto", "activo_fijo"):
+            d["cuenta"] = r["cuenta"]
+        elif r["tipo"] == "honorarios":
+            d["retenciones"] = {i: (r["monto"] >= x["umbral"] if x.get("umbral") else True)
+                                for i, x in enumerate(p["honorarios"]["retenciones"])}
+        elif r["tipo"] == "planilla":
+            cfg = p["planilla"]
+            d.update({"bruto": r["monto"], "moneda": local, "tc": 1.0, "retenciones": {},
+                      "aporte": round(r["monto"] * cfg["aporte_pct"] / 100, 2) if cfg.get("aporte_pct") else 0.0})
+        try:
+            doc = CONSTRUCTORES[tipo_op](p, d)
+        except (ValueError, KeyError) as e:
+            return st.error(f"No se pudo armar el asiento: {e}")
+        if r["tipo"] == "planilla":
+            doc["alertas"].append("Planilla por IA: no incluye retenciones de los trabajadores. Ajusta el asiento si corresponde.")
+        for s_ in r["supuestos"]:
+            doc["alertas"].append("IA: " + s_)
+        doc["alertas"].append(f"Generado con registro inteligente a partir de: «{texto.strip()[:200]}». Verifica los datos.")
+        db.crear_documento(owner, doc, "Registro inteligente (IA)", "", None)
+        st.session_state.reg_n = n + 1
+        st.session_state.ia_ok = True
+        st.rerun()
+
+
 def pg_registrar(owner, emp, p, docs):
     st.header("Registrar operación")
     st.write("Elige el tipo de operación y llena sus datos. La app arma el asiento y tú lo revisas antes de registrarlo.")
@@ -410,8 +484,12 @@ def pg_registrar(owner, emp, p, docs):
     if st.session_state.pop("reg_ok", False):
         st.success("Asiento generado. Revísalo abajo, en «Por revisar», y pulsa Registrar.")
     tipo_op = st.selectbox("Tipo de operación", ops.TIPOS, key="reg_tipo")
+    if tipo_op == ops.IA:
+        registro_ia(owner, emp, p, n)
+        st.divider()
+        return por_revisar(owner, emp, p, docs)
     K = lambda x: f"r{n}_{ops.TIPOS.index(tipo_op)}_{x}"  # noqa: E731
-    es_doc = tipo_op in ops.TIPOS[:5]                      # venta, compra, gasto, activo fijo, honorarios
+    es_doc = tipo_op in ("Venta", "Compra (mercadería, insumos)", "Gasto (servicios y consumo)", "Activo fijo", "Honorarios")
     con_monto = tipo_op not in ("Planilla", "Asiento manual")
     opc = ia.opciones_naturaleza(p)
     fmt = lambda c: f"{c} – {plan[c]}"                    # noqa: E731
@@ -544,11 +622,7 @@ def pg_registrar(owner, emp, p, docs):
             st.error(error)
         else:
             try:
-                constructor = {"Venta": ops.venta, "Compra (mercadería, insumos)": ops.compra, "Gasto (servicios y consumo)": ops.compra,
-                               "Activo fijo": ops.compra, "Honorarios": ops.honorarios, "Planilla": ops.planilla,
-                               "Cobranza a cliente": ops.cobranza, "Pago a proveedor o deuda": ops.pago,
-                               "Aporte de capital": ops.aporte_capital, "Asiento manual": ops.manual}[tipo_op]
-                doc = constructor(p, d)
+                doc = CONSTRUCTORES[tipo_op](p, d)
                 if es_doc and d["modo_imp"] == "manual" and p["tasa_impuesto"] and not p.get("impuesto_sobre_total"):
                     esperado = round(d["monto"] * p["tasa_impuesto"], 2)
                     if abs(d["igv_manual"] - esperado) > max(0.05, esperado * 0.02):
@@ -564,12 +638,7 @@ def pg_registrar(owner, emp, p, docs):
                 st.error(str(e))
 
     st.divider()
-    pend = [x for x in docs if x["estado"] == "pendiente"]
-    st.subheader(f"Por revisar ({len(pend)})")
-    if not pend:
-        st.caption("No hay operaciones pendientes.")
-    for x in pend:
-        revisar(owner, emp, p, x)
+    por_revisar(owner, emp, p, docs)
 
 
 def revisar(owner, emp, p, d):
@@ -839,7 +908,7 @@ def pg_config(owner, emp, p, docs):
                     datos["logo"] = None
                 db.guardar_empresa(owner, datos)
                 st.success("Guardado"); st.rerun()
-    if modo_actual == "lector":
+    if True:   # el registro inteligente del modo simple también usa Claude en AWS
         st.subheader("Conexión con Claude (AWS)")
         st.caption(f"Modelo: `{ia.MODEL_ID}` · Región: `{ia.REGION}`")
         if st.button("Probar conexión con AWS"):

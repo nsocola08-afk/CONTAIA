@@ -371,3 +371,149 @@ def extraer(nombre, mime, datos, empresa, pais, pista=""):
             mensajes += [r["output"]["message"],
                          {"role": "user", "content": [{"text": "Tu respuesta no fue un JSON válido. Responde SOLO con el JSON."}]}]
     raise RuntimeError(f"Claude no devolvió un resultado válido tras 2 intentos ({ultimo_error}).")
+
+
+# ------------------------------------------------------------------------------------------ registro inteligente (modo simple)
+TIPOS_IA = ["venta", "compra", "gasto", "activo_fijo", "honorarios", "planilla", "cobranza", "pago", "aporte_capital", "no_claro"]
+
+
+def _prompt_operacion(empresa, pais, hoy):
+    plan = dict(pais["plan"])
+    opc = opciones_naturaleza(pais)
+    bloques = "\n".join(f"* {k}:\n" + "\n".join(f"    {c} | {plan[c]}" for c in cs) for k, cs in opc.items())
+    notas = (empresa.get("notas_ia") or "").strip()
+    bloque_notas = f"\nINSTRUCCIONES PERMANENTES DEL USUARIO (tienen prioridad)\n{notas}\n" if notas else ""
+    guia = _paises.guia_actividad(pais, empresa.get("actividad", ""))
+    return f"""Eres un contador público experto en {pais.get('contexto', pais['nombre'])}. El usuario describe en una frase una operación de su empresa
+y tú la conviertes en los campos de un formulario. No armas el asiento: solo rellenas los datos; el sistema genera el asiento.
+
+EMPRESA: {empresa['nombre']} | Giro: {empresa['actividad']} | Régimen: {empresa['regimen']} | Moneda: {empresa['moneda']}
+FECHA DE HOY: {hoy}
+{bloque_notas}
+{guia}
+
+TIPOS DE OPERACIÓN
+- venta: la empresa vende bienes o servicios. "se_vende": "mercaderias" (bienes que revende) o "servicios".
+- compra: compra de mercadería o insumos para reventa/producción. Elige "cuenta" de la lista de naturalezas que NO sean gasto ni activo fijo.
+- gasto: servicios y consumo de la operación (luz, gas, limpieza, alquiler, útiles). Elige "cuenta" de «Gasto».
+- activo_fijo: bienes duraderos de uso propio. Elige "cuenta" de «Activo fijo».
+- honorarios: pago a un profesional independiente (recibo por honorarios).
+- planilla: remuneraciones del personal ("bruto" = total bruto).
+- cobranza: un cliente pagó una deuda anterior. pago: la empresa paga una deuda ("destino": "Proveedores", "Remuneraciones por pagar" o "Tributos por pagar").
+- aporte_capital: un socio aporta dinero.
+- no_claro: si la frase no permite saber el tipo o el monto. Escribe en "pregunta" qué falta.
+
+CUENTAS DISPONIBLES PARA compra, gasto y activo_fijo (usa el código exacto)
+{bloques}
+
+REGLAS
+- Si el usuario no dice si el monto incluye impuesto, supón que SÍ lo incluye ("incluido") y anótalo en "supuestos". Si dice que no es gravado/exonerado, usa "sin"; si dice "más IGV/IVA", usa "agregar".
+- Forma de pago: "credito" (por cobrar/pagar, "a crédito", "fiado", "a 30 días"), "banco" (transferencia, depósito, tarjeta, yape/plin, cheque) o "caja" (efectivo, al contado). Si no se indica en una venta o compra, supón "caja" y anótalo.
+- "vence": fecha AAAA-MM-DD solo si es a crédito y hay plazo; si hay "a 30 días" calcúlala desde la fecha de la operación. Si no, null.
+- Si no hay fecha, usa la fecha de hoy. Interpreta "ayer", "el lunes", "el 5 de octubre" respecto a la fecha de hoy.
+- "monto" es lo que dice el usuario (un solo número). No inventes datos: lo que no se sabe va vacío, 0 o null y se anota en "supuestos".
+- Si la operación está en otra moneda, indica "moneda" (código) y "tipo_cambio" solo si el usuario lo da; si no, 0.
+- Comprobante: "Factura", "Boleta de venta", "Recibo por honorarios", "Nota de crédito", "Nota de débito" o "Ticket / otro"; si no se indica en venta/compra, "Factura" y anótalo.
+- Reglas del país: {pais['reglas_ia']}
+
+FORMATO: responde ÚNICAMENTE con un JSON, sin texto antes ni después ni bloques de código:
+{{"tipo": "{'|'.join(TIPOS_IA)}", "pregunta": "", "fecha": "AAAA-MM-DD", "monto": 0, "impuesto": "incluido|agregar|sin",
+ "forma": "credito|banco|caja", "vence": null, "tercero_id": "", "tercero_nombre": "", "comprobante": "Factura", "documento": "",
+ "se_vende": "mercaderias|servicios", "cuenta": "", "destino": "", "bruto": 0, "moneda": "{empresa['moneda']}", "tipo_cambio": 0,
+ "glosa": "descripción corta", "supuestos": ["lo que supusiste, en frases cortas"]}}"""
+
+
+def interpretar_operacion(texto, empresa, pais, hoy):
+    """Convierte una frase del usuario en los campos del formulario de «Registrar operación». Devuelve un diccionario validado."""
+    texto = (texto or "").strip()
+    if not texto:
+        raise ValueError("Escribe la operación.")
+    if len(texto) > 1500:
+        raise ValueError("La descripción es muy larga: máximo 1,500 caracteres. Registra una operación por vez.")
+    if os.environ.get("CONTAIA_MOCK") == "1":
+        from mock_claude import operacion_falsa
+        r = operacion_falsa(texto, empresa, pais, hoy)
+    else:
+        mensajes = [{"role": "user", "content": [{"text": f"Operación: {texto}\n\nResponde solo con el JSON."}]}]
+        r, ultimo = None, None
+        for _ in range(2):
+            try:
+                resp = cliente().converse(modelId=MODEL_ID, system=[{"text": _prompt_operacion(empresa, pais, hoy)}],
+                                          messages=mensajes, inferenceConfig={"maxTokens": 800})
+            except Exception as e:  # noqa: BLE001
+                raise RuntimeError(_explicar_error(e)) from e
+            try:
+                r = _json_de(_texto(resp))
+                break
+            except (ValueError, json.JSONDecodeError) as e:
+                ultimo = e
+                mensajes += [resp["output"]["message"], {"role": "user", "content": [{"text": "Responde SOLO con el JSON."}]}]
+        if r is None:
+            raise RuntimeError(f"La IA no devolvió un resultado válido ({ultimo}). Inténtalo de nuevo o usa el formulario.")
+    return _validar_operacion(r, empresa, pais, hoy)
+
+
+def _validar_operacion(r, empresa, pais, hoy):
+    """Revisa lo que devolvió la IA: tipos, fechas, cuentas del plan y números. Lo dudoso se corrige o se rechaza."""
+    import re as _re
+    from datetime import date as _date
+    plan = dict(pais["plan"])
+    if not isinstance(r, dict):
+        raise ValueError("Respuesta inesperada de la IA.")
+    tipo = str(r.get("tipo") or "no_claro")
+    if tipo not in TIPOS_IA:
+        tipo = "no_claro"
+    sup = [str(x) for x in (r.get("supuestos") or []) if str(x).strip()]
+    out = {"tipo": tipo, "pregunta": str(r.get("pregunta") or "").strip(), "supuestos": sup}
+    if tipo == "no_claro":
+        out["pregunta"] = out["pregunta"] or "No pude entender la operación. Indica qué ocurrió y por cuánto."
+        return out
+    fecha = str(r.get("fecha") or "")
+    try:
+        _date.fromisoformat(fecha)
+    except ValueError:
+        fecha = hoy
+        sup.append("No se entendió la fecha: se usó la de hoy.")
+    try:
+        monto = round(float(r.get("monto") or 0), 2)
+    except (TypeError, ValueError):
+        monto = 0.0
+    bruto = 0.0
+    try:
+        bruto = round(float(r.get("bruto") or 0), 2)
+    except (TypeError, ValueError):
+        pass
+    if tipo == "planilla":
+        monto = bruto or monto
+        bruto = monto
+    if monto <= 0:
+        return {"tipo": "no_claro", "pregunta": "No encontré el monto. ¿Por cuánto fue la operación?", "supuestos": sup}
+    vence = r.get("vence")
+    try:
+        vence = _date.fromisoformat(str(vence)).isoformat() if vence else None
+    except ValueError:
+        vence = None
+    cuenta = str(r.get("cuenta") or "").strip()
+    if tipo in ("compra", "gasto", "activo_fijo"):
+        opc = opciones_naturaleza(pais)
+        validas = {"compra": [c for k, cs in opc.items() if not k.startswith(("Gasto", "Activo")) for c in cs],
+                   "gasto": opc["Gasto (consumo u operación)"], "activo_fijo": opc["Activo fijo"]}[tipo]
+        if cuenta not in validas:
+            cuenta = validas[0] if validas else ""
+            sup.append(f"No se pudo elegir la cuenta con certeza: se propuso {cuenta} – {plan.get(cuenta, '')}. Cámbiala en «Reclasificar» si no corresponde.")
+    mon = str(r.get("moneda") or empresa["moneda"]).upper()[:8]
+    try:
+        tc = float(r.get("tipo_cambio") or 0)
+    except (TypeError, ValueError):
+        tc = 0.0
+    out.update({
+        "fecha": fecha, "monto": monto, "bruto": bruto,
+        "impuesto": r.get("impuesto") if r.get("impuesto") in ("incluido", "agregar", "sin") else "incluido",
+        "forma": r.get("forma") if r.get("forma") in ("credito", "banco", "caja") else "caja",
+        "vence": vence, "tercero_id": _re.sub(r"[^0-9A-Za-z\-]", "", str(r.get("tercero_id") or "")),
+        "tercero_nombre": str(r.get("tercero_nombre") or "").strip()[:250],
+        "comprobante": str(r.get("comprobante") or "Factura"), "documento": str(r.get("documento") or "").strip()[:40],
+        "se_vende": "servicios" if r.get("se_vende") == "servicios" else "mercaderias", "cuenta": cuenta,
+        "destino": r.get("destino") if r.get("destino") in ("Proveedores", "Remuneraciones por pagar", "Tributos por pagar") else "Proveedores",
+        "moneda": mon, "tipo_cambio": tc, "glosa": str(r.get("glosa") or "").strip()[:200]})
+    return out
