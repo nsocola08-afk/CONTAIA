@@ -51,7 +51,8 @@ def construir(emp, p, docs, per, s):
 
     # 1. Portada
     paginas.append([
-        ("portada", {"empresa": emp["nombre"] or "Empresa", "titulo": "Informe de situación financiera", "periodo": periodo}),
+        ("portada", {"empresa": emp["nombre"] or "Empresa", "titulo": "Informe de situación financiera", "periodo": periodo,
+                     "logo": bytes(emp["logo"]) if emp.get("logo") else None}),
         ("kv", [("País", p["nombre"]), (p["id_fiscal"], emp.get("id_fiscal") or "—"), ("Actividad", emp.get("actividad") or "—"),
                 ("Régimen tributario", emp.get("regimen") or "—"), ("Moneda", emp["moneda"]),
                 ("Fecha de corte", corte.isoformat()), ("Fecha de emisión", date.today().isoformat()),
@@ -60,7 +61,7 @@ def construir(emp, p, docs, per, s):
         ("bullets", ["Estado de Situación Financiera", "Estado de Resultados", "Indicadores y evolución mensual",
                      "Análisis de cuentas: por cobrar y por pagar", "Otras cuentas principales",
                      "Resumen y conclusiones de la situación de la empresa"]),
-        ("nota", "Informe elaborado automáticamente con los asientos registrados en ContaIA. Es una herramienta de apoyo: "
+        ("nota", "Informe elaborado automáticamente con los asientos registrados en REDContable IA. Es una herramienta de apoyo: "
                  "las cifras y conclusiones deben ser revisadas por tu contador antes de usarse en trámites oficiales."),
     ])
 
@@ -268,6 +269,9 @@ def a_html(inf):
         h = ['<div class="hoja">']
         for tipo, dato in bloques:
             if tipo == "portada":
+                if dato.get("logo"):
+                    import base64
+                    h.append('<img src="data:image/png;base64,' + base64.b64encode(dato["logo"]).decode() + '" style="max-width:22cqw;max-height:14cqw;margin:6cqw 0 -8cqw 0;display:block">')
                 h.append(f'<div class="portada"><div class="e">{escape(dato["empresa"])}</div><div class="t">{escape(dato["titulo"])}</div>'
                          f'<div class="p">{escape(dato["periodo"])}</div></div>')
             elif tipo == "h1":
@@ -330,7 +334,15 @@ def a_pdf(inf):
             el.append(PageBreak())
         for tipo, dato in bloques:
             if tipo == "portada":
-                el += [Spacer(1, 50 * mm), Paragraph(limpio(dato["empresa"]), ParagraphStyle("pe", fontName="Helvetica-Bold", fontSize=28, leading=33, textColor=azul)),
+                if dato.get("logo"):
+                    from reportlab.lib.utils import ImageReader
+                    from reportlab.platypus import Image as RLImage
+                    iw, ih = ImageReader(io.BytesIO(dato["logo"])).getSize()
+                    esc = min(55 * mm / iw, 35 * mm / ih)
+                    el += [RLImage(io.BytesIO(dato["logo"]), iw * esc, ih * esc, hAlign="LEFT"), Spacer(1, 15 * mm)]
+                else:
+                    el.append(Spacer(1, 50 * mm))
+                el += [Paragraph(limpio(dato["empresa"]), ParagraphStyle("pe", fontName="Helvetica-Bold", fontSize=28, leading=33, textColor=azul)),
                        Spacer(1, 4 * mm), Paragraph(limpio(dato["titulo"]), ParagraphStyle("pt", fontName="Helvetica", fontSize=16, textColor=colors.HexColor("#445"))),
                        Paragraph(limpio(dato["periodo"]), ParagraphStyle("pp", fontName="Helvetica", fontSize=12, textColor=colors.HexColor("#5b6778"), spaceBefore=4)),
                        Spacer(1, 22 * mm)]
@@ -398,7 +410,7 @@ def a_pdf(inf):
 
     buf = io.BytesIO()
     SimpleDocTemplate(buf, pagesize=A4, leftMargin=20 * mm, rightMargin=20 * mm, topMargin=18 * mm, bottomMargin=18 * mm,
-                      title=limpio(inf["titulo"]), author="ContaIA").build(el, onFirstPage=pie, onLaterPages=pie)
+                      title=limpio(inf["titulo"]), author="REDContable IA").build(el, onFirstPage=pie, onLaterPages=pie)
     return buf.getvalue()
 
 

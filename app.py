@@ -18,7 +18,7 @@ import db
 import operaciones as ops
 import paises
 
-st.set_page_config(page_title="ContaIA", page_icon="📒", layout="wide")
+st.set_page_config(page_title="REDContable IA", layout="wide")
 COOKIE = "contaia_id"
 ESTILO = """
 <style>
@@ -123,12 +123,31 @@ def normalizar_id(texto):
     return re.sub(r"[^0-9A-Z]", "", (texto or "").upper())
 
 
+MARCA = '<span style="color:#d62828">RED</span>Contable IA'
+
+
+def procesar_logo(archivo):
+    """Reduce el logo a 400 px y lo devuelve como PNG (bytes); None si no hay o no es una imagen válida."""
+    if archivo is None:
+        return None
+    try:
+        from PIL import Image
+        im = Image.open(archivo)
+        im = im.convert("RGBA")
+        im.thumbnail((400, 400))
+        buf = io.BytesIO()
+        im.save(buf, "PNG")
+        return buf.getvalue()
+    except Exception:  # noqa: BLE001
+        return None
+
+
 MODOS = {"lector": "Lector de facturas", "simple": "Modo simple"}
 
 
 def elegir_modo():
     """Primera pantalla: cómo se van a registrar las operaciones."""
-    st.title("📒 Bienvenido a ContaIA")
+    st.markdown(f"# Bienvenido a {MARCA}", unsafe_allow_html=True)
     st.subheader("¿Cómo quieres trabajar?")
     st.caption("Los dos modos usan los mismos reportes. Puedes cambiar de modo después en Configuración.")
     c1, c2 = st.columns(2)
@@ -153,7 +172,7 @@ def elegir_modo():
 
 
 def bienvenida(owner):
-    st.title("📒 Bienvenido a ContaIA")
+    st.markdown(f"# Bienvenido a {MARCA}", unsafe_allow_html=True)
     modo = st.session_state["modo_sel"]
     m1, m2 = st.columns([4, 1])
     m1.info(f"Modo elegido: **{MODOS[modo]}**")
@@ -170,6 +189,7 @@ def bienvenida(owner):
     act_otra = st.text_input("Especificar giro", max_chars=60, placeholder="Ej.: inmobiliaria, clínica, transporte") if act_sel == paises.OTRA else ""
     with st.form("alta"):
         nombre = st.text_input("Nombre o razón social de la empresa")
+        logo_f = st.file_uploader("Logo de tu empresa (opcional)", type=["png", "jpg", "jpeg"])
         idf = st.text_input(f"{p['id_fiscal']} (número de identificación tributaria)", max_chars=20,
                             placeholder=f"Ej.: {p['id_ejemplo']}")
         if p.get("regimen_libre"):
@@ -211,7 +231,7 @@ def bienvenida(owner):
             db.guardar_empresa(owner, dict(nombre=nombre.strip(), pais=p["codigo"], id_fiscal=idn,
                                            regimen=regimen.strip(), moneda=moneda, actividad=actividad,
                                            pct_renta=(pct_in if pct_in is not None else (p["regimenes"].get(regimen) or 0)),
-                                           tasa_renta=tasa_renta, modo=modo))
+                                           tasa_renta=tasa_renta, modo=modo, logo=procesar_logo(logo_f)))
             st.session_state.pop("modo_sel", None)
             st.rerun()
 
@@ -778,6 +798,10 @@ def pg_config(owner, emp, p, docs):
     with st.form("cfg"):
         nombre = st.text_input("Razón social", emp["nombre"])
         idf = st.text_input(p["id_fiscal"], emp["id_fiscal"])
+        if emp.get("logo"):
+            st.image(bytes(emp["logo"]), width=120)
+        logo_f = st.file_uploader("Logo de tu empresa (opcional)" if not emp.get("logo") else "Cambiar logo", type=["png", "jpg", "jpeg"])
+        quitar_logo = st.checkbox("Quitar el logo actual") if emp.get("logo") else False
         if p.get("regimen_libre"):
             regimen = st.text_input("Régimen tributario", value=emp["regimen"] or "General", max_chars=100)
             r1, r2 = st.columns(2)
@@ -806,8 +830,14 @@ def pg_config(owner, emp, p, docs):
             elif not re.fullmatch(p["id_regex"], idn):
                 st.error(f"El {p['id_fiscal']} no tiene un formato válido. Ejemplo: {p['id_ejemplo']}.")
             else:
-                db.guardar_empresa(owner, dict(nombre=nombre.strip(), id_fiscal=idn, regimen=regimen.strip(), pct_renta=pct, actividad=act,
-                                               tasa_renta=tasa_renta, notas_ia=notas.strip(), modo=modo_sel))
+                datos = dict(nombre=nombre.strip(), id_fiscal=idn, regimen=regimen.strip(), pct_renta=pct, actividad=act,
+                             tasa_renta=tasa_renta, notas_ia=notas.strip(), modo=modo_sel)
+                nuevo_logo = procesar_logo(logo_f)
+                if nuevo_logo:
+                    datos["logo"] = nuevo_logo
+                elif quitar_logo:
+                    datos["logo"] = None
+                db.guardar_empresa(owner, datos)
                 st.success("Guardado"); st.rerun()
     if modo_actual == "lector":
         st.subheader("Conexión con Claude (AWS)")
@@ -1011,7 +1041,9 @@ if st.session_state.get("pagina") not in RUTAS:           # p. ej. tras cambiar 
 pag = st.session_state["pagina"]
 
 with st.sidebar:
-    st.markdown(f"### 📒 ContaIA\n**{emp['nombre']}**  \n{p['id_fiscal']} {emp['id_fiscal']} · {p['nombre']}")
+    if emp.get("logo"):
+        st.image(bytes(emp["logo"]), width=110)
+    st.markdown(f"### {MARCA}\n**{emp['nombre']}**  \n{p['id_fiscal']} {emp['id_fiscal']} · {p['nombre']}", unsafe_allow_html=True)
 
     def nav(clave, etiqueta):
         st.button(etiqueta, key=f"nav_{clave}", type="primary" if pag == clave else "secondary", width="stretch",
@@ -1030,8 +1062,6 @@ with st.sidebar:
     nav("config", "⚙️ Configuración")
     if pend:
         st.warning(f"Tienes {pend} {'operación(es)' if modo == 'simple' else 'documento(s)'} por revisar en «{entrada[1][2:].strip()}».")
-    st.caption("Tus datos están ligados a este navegador. No borres las cookies ni uses modo incógnito; "
-               "en Configuración tienes un enlace de recuperación y un respaldo.")
 
 if pag in LIBROS:
     st.caption(f"Libros auxiliares › {LIBROS[pag]}")
