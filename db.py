@@ -15,8 +15,12 @@ def _url():
     u = os.environ.get("DATABASE_URL", "").strip()
     if not u:
         return "sqlite:///contaia.db"
-    if u.startswith("postgres://"):
-        u = u.replace("postgres://", "postgresql://", 1)
+    # Railway entrega "postgres://" o "postgresql://". Se fuerza el conector psycopg2 (el instalado),
+    # porque las versiones nuevas de SQLAlchemy usan otro por defecto.
+    for prefijo in ("postgres://", "postgresql://"):
+        if u.startswith(prefijo):
+            u = "postgresql+psycopg2://" + u[len(prefijo):]
+            break
     return u
 
 
@@ -29,6 +33,10 @@ empresas = Table(
     Column("nombre", String(200)), Column("pais", String(4)), Column("id_fiscal", String(30)),
     Column("regimen", String(100)), Column("moneda", String(8)), Column("actividad", String(60)),
     Column("pct_renta", Float, default=0), Column("creado", DateTime, default=datetime.utcnow),
+    Column("notas_ia", Text),                           # instrucciones permanentes para la IA
+    Column("modo", String(10)),                         # lector | simple
+    Column("tasa_renta", Float),                        # tasa anual del impuesto a la renta (%), para estimar el resultado neto
+    Column("logo", LargeBinary),                        # logo opcional (PNG reducido)
 )
 
 documentos = Table(
@@ -46,6 +54,7 @@ documentos = Table(
     Column("glosa", Text), Column("alertas", Text),     # alertas: lista JSON
     Column("asiento", Text),                            # lista JSON de líneas
     Column("archivo_nombre", String(250)),
+    Column("vence", String(10)),                        # fecha límite de pago o cobro (AAAA-MM-DD), opcional
     Column("creado", DateTime, default=datetime.utcnow),
 )
 
@@ -62,6 +71,17 @@ def engine():
     if _engine is None:
         _engine = create_engine(_url(), pool_pre_ping=True, future=True)
         meta.create_all(_engine)
+        # Migración: bases creadas antes de agregar la columna notas_ia (no pierde datos)
+        from sqlalchemy import inspect, text
+        existentes = {c["name"] for c in inspect(_engine).get_columns("empresas")}
+        tipo_logo = LargeBinary().compile(dialect=_engine.dialect)
+        for nombre_col, tipo_col in (("notas_ia", "TEXT"), ("modo", "VARCHAR(10)"), ("tasa_renta", "FLOAT"), ("logo", str(tipo_logo))):
+            if nombre_col not in existentes:
+                with _engine.begin() as c:
+                    c.execute(text(f"ALTER TABLE empresas ADD COLUMN {nombre_col} {tipo_col}"))
+        if "vence" not in {c["name"] for c in inspect(_engine).get_columns("documentos")}:
+            with _engine.begin() as c:
+                c.execute(text("ALTER TABLE documentos ADD COLUMN vence VARCHAR(10)"))
     return _engine
 
 
@@ -102,6 +122,7 @@ def crear_documento(owner, doc, archivo_nombre, mime, contenido, estado="pendien
         no_gravado=doc["no_gravado"], total=doc["total"], glosa=doc["glosa"],
         alertas=json.dumps(doc["alertas"], ensure_ascii=False),
         asiento=json.dumps(doc["asiento"], ensure_ascii=False), archivo_nombre=archivo_nombre,
+        vence=doc.get("vence") or None,
     )
     with engine().begin() as c:
         doc_id = c.execute(insert(documentos).values(**valores)).inserted_primary_key[0]
@@ -147,6 +168,29 @@ def duplicado(owner, doc):
         documentos.c.numero == doc["numero"], documentos.c.tipo == doc["tipo"])
     with engine().connect() as c:
         return c.execute(q).first() is not None
+
+
+def estadisticas_archivos(owner):
+    """(cantidad, MB) de archivos originales guardados por versiones anteriores."""
+    from sqlalchemy import func
+    with engine().connect() as c:
+        n, total = c.execute(select(func.count(archivos.c.doc_id), func.coalesce(func.sum(func.length(archivos.c.contenido)), 0))
+                             .where(archivos.c.owner_id == owner)).one()
+    return int(n), float(total) / 1048576
+
+
+def borrar_archivos(owner):
+    """Borra solo los archivos originales; los documentos y asientos se conservan."""
+    with engine().begin() as c:
+        c.execute(delete(archivos).where(archivos.c.owner_id == owner))
+
+
+def borrar_empresa(owner):
+    """Empezar de nuevo: borra documentos, archivos y los datos de la empresa de esta persona."""
+    with engine().begin() as c:
+        c.execute(delete(archivos).where(archivos.c.owner_id == owner))
+        c.execute(delete(documentos).where(documentos.c.owner_id == owner))
+        c.execute(delete(empresas).where(empresas.c.owner_id == owner))
 
 
 def borrar_todo(owner):

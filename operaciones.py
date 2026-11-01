@@ -201,9 +201,29 @@ def pago(p, d):
 
 
 def aporte_capital(p, d):
+    """Aporte de socios en efectivo (d['monto']) y/o en especie (d['especie'], de tipo 'mercaderias' o 'activo_fijo')."""
     cb = p["cuentas_base"]
-    medio = _contrapartida(p, d["forma"], cb["banco"])
-    return _voucher(p, "capital", d, lambda m: [(medio, m, 0), (cb["capital"], 0, m)], d["glosa"] or "Aporte de capital")
+    tc = float(d.get("tc") or 1)
+    efectivo, especie = round(float(d.get("monto") or 0) * tc, 2), round(float(d.get("especie") or 0) * tc, 2)
+    if efectivo + especie <= 0:
+        raise ValueError("Escribe el monto del aporte (en efectivo y/o en especie).")
+    pares = []
+    if efectivo > 0:
+        pares.append((_contrapartida(p, d["forma"], cb["banco"]), efectivo, 0))
+    if especie > 0:
+        if d.get("tipo_especie") == "activo_fijo":
+            cuenta = ia.opciones_naturaleza(p)["Activo fijo"][0]
+        else:
+            cuenta = (p.get("costo_venta") or {}).get("inventario") or cb["compras"]
+        pares.append((cuenta, especie, 0))
+    total = round(efectivo + especie, 2)
+    pares.append((cb["capital"], 0, total))
+    im = {"base": 0.0, "impuesto": 0.0, "no_gravado": total, "total": total}
+    glosa = d["glosa"] or "Aporte de capital" + (" en efectivo y en especie" if efectivo > 0 and especie > 0 else " en especie" if especie > 0 else "")
+    doc = _doc(p, "otro", dict(d, tc=1.0), VOUCHER, im, _lineas(p, pares), glosa)
+    if especie > 0:
+        doc["alertas"].append("Aporte en especie: verifica el valor con que se aportan los bienes (valor acordado o de tasación).")
+    return finalizar(doc, p)
 
 
 def manual(p, d):
