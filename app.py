@@ -442,9 +442,12 @@ def registro_ia(owner, emp, p, n):
         forma = {"credito": ops.FORMAS[0], "banco": ops.FORMAS[1], "caja": ops.FORMAS[2]}[r["forma"]]
         if r["tipo"] in ("cobranza", "pago", "aporte_capital") and forma == ops.FORMAS[0]:
             forma = ops.FORMAS[1]
+        con_impuesto = r["tipo"] in ("venta", "compra", "gasto", "activo_fijo", "honorarios")
+        if con_impuesto and r["impuesto"] != "sin" and not (r["tasa"] or p["tasa_impuesto"]):
+            return st.warning(f"No sé qué tasa de {imp_n} aplicar. Indícala en la frase (por ejemplo «con {imp_n} de 18%») o di que no lleva impuesto.")
         d = {"moneda": r["moneda"], "tc": r["tipo_cambio"] or 1.0, "glosa": r["glosa"], "documento": r["documento"],
              "id": r["tercero_id"], "nombre": r["tercero_nombre"], "forma": forma, "modo_imp": r["impuesto"],
-             "tasa": float(round((p["tasa_impuesto"] or 0.0) * 100, 2)), "igv_manual": 0.0, "ng_manual": 0.0,
+             "tasa": r["tasa"] or float(round((p["tasa_impuesto"] or 0.0) * 100, 2)), "igv_manual": 0.0, "ng_manual": 0.0,
              "fecha": r["fecha"], "comprobante": r["comprobante"] if r["comprobante"] in ops.COMPROBANTES else "Factura",
              "monto": r["monto"], "vence": r["vence"] if forma == ops.FORMAS[0] else None, "destino": r["destino"]}
         if forma == ops.FORMAS[0] and not d["vence"] and r["tipo"] in ("venta", "compra", "gasto", "activo_fijo", "honorarios"):

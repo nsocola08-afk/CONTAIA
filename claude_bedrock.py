@@ -407,17 +407,19 @@ CUENTAS DISPONIBLES PARA compra, gasto y activo_fijo (usa el código exacto)
 {bloques}
 
 REGLAS
+- "tasa_impuesto": el porcentaje del impuesto al consumo (IVA, IGV, "valor agregado", impuesto a las ventas, etc.) SOLO si el usuario lo dice (ej. 18); si no lo dice, null. Si el usuario menciona un porcentaje de impuesto, "impuesto" no puede ser "sin".
 - Si el usuario no dice si el monto incluye impuesto, supón que SÍ lo incluye ("incluido") y anótalo en "supuestos". Si dice que no es gravado/exonerado, usa "sin"; si dice "más IGV/IVA", usa "agregar".
 - Forma de pago: "credito" (por cobrar/pagar, "a crédito", "fiado", "a 30 días"), "banco" (transferencia, depósito, tarjeta, yape/plin, cheque) o "caja" (efectivo, al contado). Si no se indica en una venta o compra, supón "caja" y anótalo.
 - "vence": fecha AAAA-MM-DD solo si es a crédito y hay plazo; si hay "a 30 días" calcúlala desde la fecha de la operación. Si no, null.
 - Si no hay fecha, usa la fecha de hoy. Interpreta "ayer", "el lunes", "el 5 de octubre" respecto a la fecha de hoy.
-- "monto" es lo que dice el usuario (un solo número). No inventes datos: lo que no se sabe va vacío, 0 o null y se anota en "supuestos".
+- "supuestos": SOLO lo que el usuario NO dijo y tuviste que suponer (forma de pago, comprobante, fecha, tasa, plazo). No repitas ni confirmes lo que sí dijo, ni escribas datos que no se supusieron. Máximo 4 frases cortas.
+- "monto" es lo que dice el usuario (un solo número). Si da cantidad x precio unitario, "monto" es el total (cantidad × precio), sin impuesto si dice que se agrega. No inventes datos: lo que no se sabe va vacío, 0 o null y se anota en "supuestos".
 - Si la operación está en otra moneda, indica "moneda" (código) y "tipo_cambio" solo si el usuario lo da; si no, 0.
 - Comprobante: "Factura", "Boleta de venta", "Recibo por honorarios", "Nota de crédito", "Nota de débito" o "Ticket / otro"; si no se indica en venta/compra, "Factura" y anótalo.
 - Reglas del país: {pais['reglas_ia']}
 
 FORMATO: responde ÚNICAMENTE con un JSON, sin texto antes ni después ni bloques de código:
-{{"tipo": "{'|'.join(TIPOS_IA)}", "pregunta": "", "fecha": "AAAA-MM-DD", "monto": 0, "impuesto": "incluido|agregar|sin",
+{{"tipo": "{'|'.join(TIPOS_IA)}", "pregunta": "", "fecha": "AAAA-MM-DD", "monto": 0, "impuesto": "incluido|agregar|sin", "tasa_impuesto": null,
  "forma": "credito|banco|caja", "vence": null, "tercero_id": "", "tercero_nombre": "", "comprobante": "Factura", "documento": "",
  "se_vende": "mercaderias|servicios", "cuenta": "", "destino": "", "bruto": 0, "moneda": "{empresa['moneda']}", "tipo_cambio": 0,
  "glosa": "descripción corta", "supuestos": ["lo que supusiste, en frases cortas"]}}"""
@@ -506,8 +508,13 @@ def _validar_operacion(r, empresa, pais, hoy):
         tc = float(r.get("tipo_cambio") or 0)
     except (TypeError, ValueError):
         tc = 0.0
+    try:
+        tasa = float(r.get("tasa_impuesto") or 0)
+    except (TypeError, ValueError):
+        tasa = 0.0
+    tasa = tasa if 0 < tasa <= 100 else 0.0
     out.update({
-        "fecha": fecha, "monto": monto, "bruto": bruto,
+        "fecha": fecha, "monto": monto, "bruto": bruto, "tasa": tasa,
         "impuesto": r.get("impuesto") if r.get("impuesto") in ("incluido", "agregar", "sin") else "incluido",
         "forma": r.get("forma") if r.get("forma") in ("credito", "banco", "caja") else "caja",
         "vence": vence, "tercero_id": _re.sub(r"[^0-9A-Za-z\-]", "", str(r.get("tercero_id") or "")),
