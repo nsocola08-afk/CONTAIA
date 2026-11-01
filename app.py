@@ -449,7 +449,8 @@ def registro_ia(owner, emp, p, n):
              "id": r["tercero_id"], "nombre": r["tercero_nombre"], "forma": forma, "modo_imp": r["impuesto"],
              "tasa": r["tasa"] or float(round((p["tasa_impuesto"] or 0.0) * 100, 2)), "igv_manual": 0.0, "ng_manual": 0.0,
              "fecha": r["fecha"], "comprobante": r["comprobante"] if r["comprobante"] in ops.COMPROBANTES else "Factura",
-             "monto": r["monto"], "vence": r["vence"] if forma == ops.FORMAS[0] else None, "destino": r["destino"]}
+             "monto": r["monto"], "vence": r["vence"] if forma == ops.FORMAS[0] else None, "destino": r["destino"],
+             "costo": r["costo"]}
         if forma == ops.FORMAS[0] and not d["vence"] and r["tipo"] in ("venta", "compra", "gasto", "activo_fijo", "honorarios"):
             d["vence"] = (date.fromisoformat(r["fecha"]) + timedelta(days=30)).isoformat()
             r["supuestos"].append("No indicaste plazo: se supuso fecha límite de pago a 30 días.")
@@ -555,6 +556,11 @@ def pg_registrar(owner, emp, p, docs):
                 por_def = 1 if emp["actividad"] in ("Servicios", "Restaurante") else 0
                 vende = st.radio("Se vende", ["Mercaderías", "Servicios"], index=por_def, horizontal=True, key=K("vende"))
                 d["cuenta"] = p["cuentas_base"]["ventas" if vende == "Mercaderías" else "ventas_servicios"]
+                if vende == "Mercaderías" and p.get("costo_venta"):
+                    cc1, _ = st.columns([1, 2])
+                    d["costo"] = cc1.number_input(f"Costo de la mercadería vendida ({local})", min_value=0.0, step=1.0, format="%.2f",
+                                                  key=K("costo"), help="Lo que te costó lo que vendes ahora. La compra va al inventario "
+                                                  "y, al vender, se registra el costo de ventas. Si lo dejas en 0, podrás agregarlo al revisar el asiento.")
             elif tipo_op == "Compra (mercadería, insumos)":
                 naturalezas = [k for k in opc if not k.startswith(("Gasto", "Activo"))]
                 a1, a2 = st.columns([1, 2])

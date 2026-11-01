@@ -281,13 +281,14 @@ def lineas_costo_venta(asiento, pais, monto):
 
 
 def pide_costo_venta(doc_o_asiento, tipo, pais):
-    """True si es una venta de mercaderías sin asiento de costo de ventas (cuenta 69)."""
+    """True si es una venta de mercaderías sin asiento de costo de ventas."""
     cfg = pais.get("costo_venta")
     asiento = doc_o_asiento
     if not cfg or tipo != "venta":
         return False
     vende = any(str(l["cuenta"]).startswith(cfg["ventas_prefijo"]) and l["haber"] > 0 for l in asiento)
-    tiene = any(str(l["cuenta"]).startswith("69") for l in asiento)
+    prefijo_costo = cfg.get("costo_prefijo", cfg["cuenta_costo"][:2])
+    tiene = any(str(l["cuenta"]).startswith(prefijo_costo) for l in asiento)
     return vende and not tiene
 
 
@@ -410,6 +411,7 @@ REGLAS
 - "tasa_impuesto": el porcentaje del impuesto al consumo (IVA, IGV, "valor agregado", impuesto a las ventas, etc.) SOLO si el usuario lo dice (ej. 18); si no lo dice, null. Si el usuario menciona un porcentaje de impuesto, "impuesto" no puede ser "sin".
 - Si el usuario no dice si el monto incluye impuesto, supón que SÍ lo incluye ("incluido") y anótalo en "supuestos". Si dice que no es gravado/exonerado, usa "sin"; si dice "más IGV/IVA", usa "agregar".
 - Forma de pago: "credito" (por cobrar/pagar, "a crédito", "fiado", "a 30 días"), "banco" (transferencia, depósito, tarjeta, yape/plin, cheque) o "caja" (efectivo, al contado). Si no se indica en una venta o compra, supón "caja" y anótalo.
+- "costo_venta": solo en ventas de mercadería y SOLO si el usuario dice cuánto le costó lo vendido (costo de la mercadería); si no lo dice, 0. Nunca lo calcules ni lo estimes.
 - "vence": fecha AAAA-MM-DD solo si es a crédito y hay plazo; si hay "a 30 días" calcúlala desde la fecha de la operación. Si no, null.
 - Si no hay fecha, usa la fecha de hoy. Interpreta "ayer", "el lunes", "el 5 de octubre" respecto a la fecha de hoy.
 - "supuestos": SOLO lo que el usuario NO dijo y tuviste que suponer (forma de pago, comprobante, fecha, tasa, plazo). No repitas ni confirmes lo que sí dijo, ni escribas datos que no se supusieron. Máximo 4 frases cortas.
@@ -421,7 +423,7 @@ REGLAS
 FORMATO: responde ÚNICAMENTE con un JSON, sin texto antes ni después ni bloques de código:
 {{"tipo": "{'|'.join(TIPOS_IA)}", "pregunta": "", "fecha": "AAAA-MM-DD", "monto": 0, "impuesto": "incluido|agregar|sin", "tasa_impuesto": null,
  "forma": "credito|banco|caja", "vence": null, "tercero_id": "", "tercero_nombre": "", "comprobante": "Factura", "documento": "",
- "se_vende": "mercaderias|servicios", "cuenta": "", "destino": "", "bruto": 0, "moneda": "{empresa['moneda']}", "tipo_cambio": 0,
+ "se_vende": "mercaderias|servicios", "costo_venta": 0, "cuenta": "", "destino": "", "bruto": 0, "moneda": "{empresa['moneda']}", "tipo_cambio": 0,
  "glosa": "descripción corta", "supuestos": ["lo que supusiste, en frases cortas"]}}"""
 
 
@@ -513,8 +515,12 @@ def _validar_operacion(r, empresa, pais, hoy):
     except (TypeError, ValueError):
         tasa = 0.0
     tasa = tasa if 0 < tasa <= 100 else 0.0
+    try:
+        costo = max(0.0, round(float(r.get("costo_venta") or 0), 2))
+    except (TypeError, ValueError):
+        costo = 0.0
     out.update({
-        "fecha": fecha, "monto": monto, "bruto": bruto, "tasa": tasa,
+        "fecha": fecha, "monto": monto, "bruto": bruto, "tasa": tasa, "costo": costo,
         "impuesto": r.get("impuesto") if r.get("impuesto") in ("incluido", "agregar", "sin") else "incluido",
         "forma": r.get("forma") if r.get("forma") in ("credito", "banco", "caja") else "caja",
         "vence": vence, "tercero_id": _re.sub(r"[^0-9A-Za-z\-]", "", str(r.get("tercero_id") or "")),

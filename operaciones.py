@@ -115,7 +115,12 @@ def venta(p, d):
         iva = cb["iva_debito_cobrado"]
     ls = _lineas(p, [(cobro, im["total"], 0), (iva, 0, im["impuesto"]), (d["cuenta"], 0, im["base"] + im["no_gravado"])])
     glosa = d["glosa"] or f"Venta {d.get('documento', '')}".strip()
-    return finalizar(_doc(p, "venta", d, d["comprobante"], im, ls, glosa), p, d["comprobante"])
+    doc = finalizar(_doc(p, "venta", d, d["comprobante"], im, ls, glosa), p, d["comprobante"])
+    costo = round(float(d.get("costo") or 0), 2)
+    if costo > 0 and d["comprobante"] != "Nota de crédito" and ia.pide_costo_venta(doc["asiento"], "venta", p):
+        doc["asiento"] += ia.lineas_costo_venta(doc["asiento"], p, costo)
+        doc["alertas"] = [a for a in doc["alertas"] if "falta el asiento de costo de ventas" not in a]
+    return doc
 
 
 def compra(p, d):

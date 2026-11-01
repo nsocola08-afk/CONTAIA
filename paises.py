@@ -177,7 +177,8 @@ COLOMBIA = {
     "nomina": {"gasto": ["5105", "5110"], "aportes": ["2370"], "neto": ["2505", "2335"]},
     "columnas_nomina": [("Retenciones y aportes de nómina", ["2370"])],
     "cuentas_base": {"clientes": "1305", "proveedores": "2205", "iva_credito": "240802", "iva_debito": "240801",
-                     "ventas": "4135", "compras": "6205", "capital": "3105", "banco": "1110"},
+                     "ventas": "4135", "compras": "1435", "capital": "3105", "banco": "1110"},
+    "costo_venta": {"cuenta_costo": "6135", "inventario": "1435", "ventas_prefijo": "4135"},
     "reglas_ia": """
 - IVA: tarifa general 19% (también 5% y 0%/exento según el bien). Usa la tarifa que muestre la factura.
 - El IVA va en la cuenta 2408: IVA generado (ventas) a 240801 por el crédito; IVA descontable (compras) a 240802 por el débito.
@@ -242,7 +243,8 @@ MEXICO = {
     "nomina": {"gasto": ["603.01", "603.26", "=603"], "aportes": ["216.01", "216.11", "211.01"], "neto": ["210", "201"]},
     "columnas_nomina": [("ISR retenido y cuotas IMSS", ["216.01", "216.11", "211.01"])],
     "cuentas_base": {"clientes": "105.01", "proveedores": "201", "iva_credito": "118.01", "iva_debito": "209.01",
-                     "ventas": "401.01", "compras": "501", "capital": "301", "banco": "102"},
+                     "ventas": "401.01", "compras": "115", "capital": "301", "banco": "102"},
+    "costo_venta": {"cuenta_costo": "501", "inventario": "115", "ventas_prefijo": "401"},
     "reglas_ia": """
 - IVA tarifa general 16% (8% en franja fronteriza y 0% para algunos bienes: usa la tasa que muestre el CFDI).
 - Compra (CFDI recibido): Debe gasto o inventario por el subtotal; Debe 118.01 IVA acreditable pagado si se pagó de contado,
@@ -313,7 +315,9 @@ _GRUPOS_ESTANDAR = {
 }
 _NOMINA_ESTANDAR = {"gasto": ["52", "5301"], "aportes": ["2302", "2202"], "neto": ["2301", "2102"]}
 _BASE_ESTANDAR = {"clientes": "1201", "proveedores": "2101", "iva_credito": "1401", "iva_debito": "2201",
-                  "ventas": "4101", "compras": "5101", "capital": "3101", "banco": "1102"}
+                  "ventas": "4101", "compras": "1301", "capital": "3101", "banco": "1102"}
+# Inventario permanente: la compra de mercadería entra al inventario y el costo de ventas se registra al vender
+_COSTO_VENTA_ESTANDAR = {"cuenta_costo": "5101", "inventario": "1301", "ventas_prefijo": "4101"}
 _ACTIVIDADES = ACTIVIDADES
 _AVISO_ESTANDAR = (AVISO_BASE + " Este país no usa un plan único obligatorio para todas las empresas: se aplica un plan "
                    "estándar de uso común que puedes adaptar con tu contador.")
@@ -327,6 +331,7 @@ CHILE = {
                   "Pro Pyme transparente (14 D N°8)": None},
     "pago_cuenta_label": "PPM", "actividades": _ACTIVIDADES, "aviso": _AVISO_ESTANDAR,
     "grupos": _GRUPOS_ESTANDAR, "nomina": _NOMINA_ESTANDAR, "cuentas_base": _BASE_ESTANDAR,
+    "costo_venta": _COSTO_VENTA_ESTANDAR,
     "columnas_nomina": [("Cotizaciones e impuesto retenido", ["2302", "2202"])],
     "plan": _plan_estandar("IVA crédito fiscal", "IVA débito fiscal", "Impuestos por pagar y retenciones (honorarios, impuesto único)",
                            "Remuneraciones por pagar (líquidos)", "Cotizaciones previsionales por pagar"),
@@ -352,6 +357,7 @@ ARGENTINA = {
     "regimenes": {"Responsable inscripto": None, "Monotributista": None},
     "pago_cuenta_label": "Pago a cuenta", "actividades": _ACTIVIDADES, "aviso": _AVISO_ESTANDAR,
     "grupos": _GRUPOS_ESTANDAR, "nomina": _NOMINA_ESTANDAR, "cuentas_base": _BASE_ESTANDAR,
+    "costo_venta": _COSTO_VENTA_ESTANDAR,
     "columnas_nomina": [("Cargas sociales y retenciones", ["2302", "2202"])],
     "plan": _plan_estandar("IVA crédito fiscal", "IVA débito fiscal", "Impuestos por pagar, retenciones y percepciones",
                            "Sueldos y jornales a pagar", "Cargas sociales a pagar"),
@@ -377,6 +383,7 @@ ECUADOR = {
     "pago_cuenta_label": "Pago a cuenta", "actividades": _ACTIVIDADES,
     "aviso": _AVISO_ESTANDAR + " Si tu empresa está controlada por la Superintendencia de Compañías, consulta con tu contador por su plan oficial.",
     "grupos": _GRUPOS_ESTANDAR, "nomina": _NOMINA_ESTANDAR, "cuentas_base": _BASE_ESTANDAR,
+    "costo_venta": _COSTO_VENTA_ESTANDAR,
     "columnas_nomina": [("Aportes IESS y retenciones", ["2302", "2202"])],
     "plan": _plan_estandar("Crédito tributario IVA", "IVA cobrado en ventas (por pagar)", "Impuestos por pagar y retenciones (SRI)",
                            "Sueldos por pagar", "Aportes al IESS y beneficios de ley por pagar"),
@@ -401,6 +408,7 @@ BOLIVIA = {
     "regimenes": {"Régimen general": 3.0, "Sistema Tributario Integrado (STI)": None},
     "pago_cuenta_label": "IT (Impuesto a las Transacciones)", "actividades": _ACTIVIDADES, "aviso": _AVISO_ESTANDAR,
     "grupos": _GRUPOS_ESTANDAR, "nomina": _NOMINA_ESTANDAR, "cuentas_base": _BASE_ESTANDAR,
+    "costo_venta": _COSTO_VENTA_ESTANDAR,
     "columnas_nomina": [("Aportes AFP/CNS y retenciones", ["2302", "2202"])],
     "plan": _plan_estandar("IVA crédito fiscal", "IVA débito fiscal", "Impuestos por pagar (IT, IUE, retenciones)",
                            "Sueldos por pagar", "Aportes sociales por pagar (AFP, CNS)"),
@@ -432,6 +440,7 @@ ESTANDAR = {
     "aviso": ("Modo neutro: la IA usa un plan estándar y la tasa de impuesto que muestre cada comprobante. "
               "No aplica reglas de ningún país; tu contador debe validar los asientos y las retenciones."),
     "grupos": _GRUPOS_ESTANDAR, "nomina": _NOMINA_ESTANDAR, "cuentas_base": _BASE_ESTANDAR,
+    "costo_venta": _COSTO_VENTA_ESTANDAR,
     "columnas_nomina": [("Aportes y retenciones de nómina", ["2302", "2202"])],
     "plan": _plan_estandar("Impuesto a las ventas soportado (crédito)", "Impuesto a las ventas cobrado (por pagar)",
                            "Impuestos por pagar y retenciones", "Sueldos por pagar", "Aportes sociales por pagar"),
